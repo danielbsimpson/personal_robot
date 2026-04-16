@@ -186,6 +186,42 @@ def test_extract_json_patch_surrounded_by_text() -> None:
     assert patch == {"facts": {"pet": "dog"}}
 
 
+def test_extract_json_patch_no_language_tag() -> None:
+    """Models that emit ``` without json tag should still be parsed."""
+    text = "```\n{\"user\": {\"hobby\": \"painting\"}}\n```"
+    patch = _extract_json_patch(text)
+    assert patch == {"user": {"hobby": "painting"}}
+
+
+def test_extract_json_patch_inner_backtick_wrapper() -> None:
+    """Some models wrap the JSON in inner backticks inside the fence: ```\\n`{...}`\\n```."""
+    text = "```\n`{\"user\": {\"mood\": \"happy\"}}`\n```"
+    patch = _extract_json_patch(text)
+    assert patch == {"user": {"mood": "happy"}}
+
+
+def test_extract_json_patch_raw_json_fallback() -> None:
+    """If the response is bare JSON with no fence, it should still be parsed."""
+    text = '{"identity": {"personality_notes": {"art": "finds art talk engaging"}}}'
+    patch = _extract_json_patch(text)
+    assert patch is not None
+    assert patch["identity"]["personality_notes"]["art"] == "finds art talk engaging"
+
+
+def test_apply_patch_deep_merges_personality_notes(tmp_path: Path) -> None:
+    """Second patch into a nested dict should add keys, not overwrite the whole dict."""
+    soul = SoulFile(path=tmp_path / "soul.yaml")
+    soul.save({"identity": {"personality_notes": {}}})
+
+    soul.apply_patch({"identity": {"personality_notes": {"art": "likes art discussions"}}})
+    soul.apply_patch({"identity": {"personality_notes": {"music": "appreciates music taste"}}})
+
+    data = soul.load()
+    notes = data["identity"]["personality_notes"]
+    assert notes.get("art") == "likes art discussions", "First patch entry should survive second patch"
+    assert notes.get("music") == "appreciates music taste", "Second patch entry should be present"
+
+
 # ---------------------------------------------------------------------------
 # _extract_question_list
 # ---------------------------------------------------------------------------

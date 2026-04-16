@@ -122,7 +122,15 @@ class SoulFile:
             if isinstance(updates, dict):
                 if section not in data or not isinstance(data.get(section), dict):
                     data[section] = {}
-                data[section].update(updates)
+                # Deep merge: if both the existing value and the incoming value are
+                # dicts (e.g. identity.personality_notes), merge recursively so that
+                # successive patches accumulate entries rather than overwriting them.
+                for key, value in updates.items():
+                    existing = data[section].get(key)
+                    if isinstance(existing, dict) and isinstance(value, dict):
+                        existing.update(value)
+                    else:
+                        data[section][key] = value
             else:
                 data[section] = updates
         self.save(data)
@@ -144,12 +152,27 @@ class SoulFile:
 # ---------------------------------------------------------------------------
 
 def _extract_json_patch(text: str) -> Optional[dict]:
-    """Parse the first ```json ... ``` block in text. Returns None if absent or invalid."""
-    match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
-    if not match:
-        return None
+    """Parse the first fenced JSON block from text. Returns None if absent or invalid.
+
+    Accepts both ```json ... ``` and plain ``` ... ``` fences so the function is
+    robust to models that omit the language tag.
+    Falls back to attempting a direct JSON parse of the whole text if no fence
+    is found and the text looks like a JSON object.
+    """
+    # Try ```json ... ``` or ``` ... ``` (language tag optional)
+    match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
+    if match:
+        # Strip any inner backtick wrappers emitted by some models (```\n`{...}`\n```)
+        candidate = match.group(1).strip().strip("`").strip()
+    else:
+        # No fences — try treating the whole response as raw JSON
+        stripped = text.strip()
+        if not (stripped.startswith("{") and stripped.endswith("}")):
+            return None
+        candidate = stripped
+
     try:
-        patch = json.loads(match.group(1))
+        patch = json.loads(candidate)
         return patch if isinstance(patch, dict) else None
     except (json.JSONDecodeError, ValueError):
         return None
