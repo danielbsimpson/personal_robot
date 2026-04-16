@@ -18,6 +18,8 @@ from typing import Optional
 
 import yaml
 
+from src.utils.log import get_logger
+
 # ---------------------------------------------------------------------------
 # Paths and constants
 # ---------------------------------------------------------------------------
@@ -36,21 +38,18 @@ SOUL_CURIOSITY_EVERY = 6
 _write_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
-# Worker logging — writes to data/soul_worker.log
+# Lazy logger — writes to data/logs/soul_changes.log via get_logger
 # ---------------------------------------------------------------------------
 
-SOUL_LOG_PATH = _PROJECT_ROOT / "data" / "soul_worker.log"
+_log: Optional[logging.Logger] = None
 
-_log = logging.getLogger("soul_worker")
-if not _log.handlers:
-    _log.setLevel(logging.DEBUG)
-    try:
-        SOUL_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _fh = logging.FileHandler(SOUL_LOG_PATH, encoding="utf-8")
-        _fh.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-8s  %(message)s"))
-        _log.addHandler(_fh)
-    except OSError:
-        pass
+
+def _get_log() -> logging.Logger:
+    """Return the soul_changes logger, creating it on first call."""
+    global _log
+    if _log is None:
+        _log = get_logger("soul_changes")
+    return _log
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +107,17 @@ class SoulFile:
         if not patch:
             return
         data = self.load()
+
+        # Record before/after for each changed key for the audit log
+        changes: dict[str, dict] = {}
+        for section, updates in patch.items():
+            if isinstance(updates, dict):
+                for key, new_val in updates.items():
+                    old_val = (data.get(section) or {}).get(key, "<new>")
+                    changes[f"{section}.{key}"] = {"before": old_val, "after": new_val}
+            else:
+                changes[section] = {"before": data.get(section, "<new>"), "after": updates}
+
         for section, updates in patch.items():
             if isinstance(updates, dict):
                 if section not in data or not isinstance(data.get(section), dict):
@@ -116,6 +126,8 @@ class SoulFile:
             else:
                 data[section] = updates
         self.save(data)
+
+        _get_log().info("patch applied — changes: %s", changes)
 
     def as_yaml_string(self) -> str:
         """Return the full soul file contents as a plain YAML string."""
@@ -154,7 +166,7 @@ def _patch_worker(
     base_url: str,
 ) -> None:
     """Run in a daemon thread: ask the LLM for a soul patch and apply it if found."""
-    _log.info("patch_worker start — model=%s, msgs=%d", model, len(conversation_snapshot))
+    _get_log().info("patch_worker start — model=%s, msgs=%d", model, len(conversation_snapshot))
     try:
         # Lazy imports prevent circular dependency issues at module load time
         from src.llm.client import OllamaClient
@@ -178,16 +190,16 @@ def _patch_worker(
             stream=False,
         )
 
-        _log.debug("patch_worker raw response (first 500): %s", raw[:500])
+        _get_log().debug("patch_worker raw response (first 500): %s", raw[:500])
         patch = _extract_json_patch(raw)
         if patch:
-            _log.info("patch_worker applying patch: %s", patch)
+            _get_log().info("patch_worker applying patch: %s", patch)
             soul.apply_patch(patch)
         else:
-            _log.info("patch_worker: no patch — LLM found nothing new to record")
+            _get_log().info("patch_worker: no new facts")
 
     except Exception as exc:
-        _log.error("patch_worker error: %s", exc, exc_info=True)
+        _get_log().error("patch_worker error: %s", exc, exc_info=True)
 
 
 def maybe_update_soul(
@@ -228,7 +240,7 @@ def _curiosity_worker(
     base_url: str,
 ) -> None:
     """Run in a daemon thread: generate curiosity questions and append to soul."""
-    _log.info("curiosity_worker start — model=%s, msgs=%d", model, len(conversation_snapshot))
+    _get_log().info("curiosity_worker start — model=%s, msgs=%d", model, len(conversation_snapshot))
     try:
         from src.llm.client import OllamaClient
         from src.llm.prompts import CURIOSITY_PROMPT
@@ -249,13 +261,13 @@ def _curiosity_worker(
             stream=False,
         )
 
-        _log.debug("curiosity_worker raw response (first 500): %s", raw[:500])
+        _get_log().debug("curiosity_worker raw response (first 500): %s", raw[:500])
         new_questions = _extract_question_list(raw)
         if not new_questions:
-            _log.info("curiosity_worker: no questions found in response")
+            _get_log().info("curiosity_worker: no questions found in response")
             return
 
-        _log.info("curiosity_worker adding %d question(s): %s", len(new_questions), new_questions)
+        _get_log().info("curiosity_worker adding %d question(s): %s", len(new_questions), new_questions)
         # Merge into existing queue, skipping exact duplicates
         data = soul.load()
         identity = data.get("identity") or {}
@@ -266,7 +278,7 @@ def _curiosity_worker(
         soul.update("identity", "curiosity_queue", merged)
 
     except Exception as exc:
-        _log.error("curiosity_worker error: %s", exc, exc_info=True)
+        _get_log().error("curiosity_worker error: %s", exc, exc_info=True)
 
 
 def maybe_grow_curiosity(

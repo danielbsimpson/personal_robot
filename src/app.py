@@ -21,7 +21,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.llm.client import OllamaClient, trim_history, OLLAMA_BASE_URL, DEFAULT_MODEL
 from src.llm.prompts import BASE_SYSTEM_PROMPT, get_time_section
-from src.memory.soul import SoulFile, maybe_update_soul, maybe_grow_curiosity, SOUL_UPDATE_EVERY, SOUL_CURIOSITY_EVERY, SOUL_LOG_PATH
+from src.memory.soul import SoulFile, maybe_update_soul, maybe_grow_curiosity, SOUL_UPDATE_EVERY, SOUL_CURIOSITY_EVERY
+from src.utils.log import ConversationLogger, get_logger, _DEFAULT_LOGS_DIR
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -29,6 +30,10 @@ from src.memory.soul import SoulFile, maybe_update_soul, maybe_grow_curiosity, S
 
 PAGE_TITLE = "Personal Robot Chat"
 CONTEXT_LIMIT_CHARS = 4096 * 4
+_LOGS_DIR = _DEFAULT_LOGS_DIR
+
+# Ensure the memory log stub exists so the tab is ready for Phase 2.
+get_logger("memory")
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +106,9 @@ if "selected_model" not in st.session_state:
 
 if "message_count" not in st.session_state:
     st.session_state.message_count: int = 0
+
+if "conv_logger" not in st.session_state:
+    st.session_state.conv_logger = ConversationLogger(model=st.session_state.selected_model)
 
 # ---------------------------------------------------------------------------
 # Sidebar
@@ -182,16 +190,63 @@ with st.sidebar:
 
     st.divider()
 
-    # --- Worker log viewer ---
-    with st.expander("📋 Worker log", expanded=False):
-        if SOUL_LOG_PATH.exists():
-            lines = SOUL_LOG_PATH.read_text(encoding="utf-8").splitlines()
-            st.code("\n".join(lines[-30:]) if lines else "(empty)", language="text")
-            if st.button("Clear log", key="clear_log"):
-                SOUL_LOG_PATH.write_text("", encoding="utf-8")
-                st.rerun()
-        else:
-            st.caption("No log yet — workers haven't fired.")
+    # --- Worker log viewer (tabbed) ---
+    with st.expander("📋 Logs", expanded=False):
+        tab_conv, tab_soul, tab_trim, tab_mem = st.tabs(
+            ["Conversations", "Soul changes", "Context trim", "Memory"]
+        )
+
+        def _last_lines(path, n: int = 50) -> str:
+            if not path.exists():
+                return ""
+            lines = path.read_text(encoding="utf-8").splitlines()
+            return "\n".join(lines[-n:]) if lines else ""
+
+        with tab_conv:
+            conv_dir = _LOGS_DIR / "conversations"
+            files = sorted(conv_dir.glob("*.jsonl")) if conv_dir.exists() else []
+            if files:
+                latest = files[-1]
+                st.caption(f"`{latest.name}`")
+                st.code(_last_lines(latest), language="json")
+                if st.button("Clear", key="clear_conv_log"):
+                    latest.write_text("", encoding="utf-8")
+                    st.rerun()
+            else:
+                st.caption("No conversation log yet.")
+
+        with tab_soul:
+            soul_log = _LOGS_DIR / "soul_changes.log"
+            content = _last_lines(soul_log)
+            if content:
+                st.code(content, language="text")
+                if st.button("Clear", key="clear_soul_log"):
+                    soul_log.write_text("", encoding="utf-8")
+                    st.rerun()
+            else:
+                st.caption("No soul changes logged yet.")
+
+        with tab_trim:
+            trim_log = _LOGS_DIR / "context_trim.log"
+            content = _last_lines(trim_log)
+            if content:
+                st.code(content, language="text")
+                if st.button("Clear", key="clear_trim_log"):
+                    trim_log.write_text("", encoding="utf-8")
+                    st.rerun()
+            else:
+                st.caption("No context trims logged yet.")
+
+        with tab_mem:
+            mem_log = _LOGS_DIR / "memory.log"
+            content = _last_lines(mem_log)
+            if content:
+                st.code(content, language="text")
+                if st.button("Clear", key="clear_mem_log"):
+                    mem_log.write_text("", encoding="utf-8")
+                    st.rerun()
+            else:
+                st.caption("No memory log yet — wired in Phase 2.")
 
     st.caption(f"Model: `{st.session_state.selected_model}`")
     st.caption(f"History: {len(st.session_state.conversation)} messages")
@@ -232,6 +287,7 @@ if user_input:
     with st.chat_message("user"):
         st.markdown(user_input)
     st.session_state.conversation.append({"role": "user", "content": user_input})
+    st.session_state.conv_logger.log_turn("user", user_input, model=st.session_state.selected_model)
 
     # Trim history to stay within context budget before sending
     trimmed = trim_history(
@@ -245,6 +301,9 @@ if user_input:
     # Persist the full response into session state
     st.session_state.conversation.append(
         {"role": "assistant", "content": response_text}
+    )
+    st.session_state.conv_logger.log_turn(
+        "assistant", response_text, model=st.session_state.selected_model
     )
 
     # Periodic soul patch check — background thread, never blocks the UI

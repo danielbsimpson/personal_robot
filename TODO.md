@@ -130,54 +130,123 @@ This is distinct from Phase 2 (episodic RAG memory):
 
 ### 1.8.1 — Central Logging Setup (`src/utils/log.py`)
 
-- [ ] Create `src/utils/__init__.py` and `src/utils/log.py`
-- [ ] Implement `get_logger(name: str) -> logging.Logger` — returns a logger that writes to `data/logs/<name>.log` (rotating, max 5 MB × 3 backups) and WARNING+ to console
-- [ ] All existing ad-hoc loggers in `soul.py` (`soul_worker`, `curiosity_worker`) migrated to use `get_logger()`
-- [ ] Ensure `data/logs/` is added to `.gitignore` (alongside existing `data/` rule — confirm coverage)
+- [x] Create `src/utils/__init__.py` and `src/utils/log.py`
+- [x] Implement `get_logger(name: str) -> logging.Logger` — returns a logger that writes to `data/logs/<name>.log` (rotating, max 5 MB × 3 backups) and WARNING+ to console
+- [x] All existing ad-hoc loggers in `soul.py` (`soul_worker`, `curiosity_worker`) migrated to use `get_logger()`
+- [x] Ensure `data/logs/` is added to `.gitignore` (alongside existing `data/` rule — confirm coverage)
 
 ### 1.8.2 — Conversation Turn Log
 
-- [ ] On each completed turn (user message + assistant response), append a JSON object to `data/logs/conversations/<YYYY-MM-DD_HH-MM-SS>.jsonl`:
+- [x] On each completed turn (user message + assistant response), append a JSON object to `data/logs/conversations/<YYYY-MM-DD_HH-MM-SS>.jsonl`:
   ```json
   {"ts": "2026-04-16T14:32:01", "role": "user", "content": "...", "model": "phi4-mini"}
   {"ts": "2026-04-16T14:32:04", "role": "assistant", "content": "...", "model": "phi4-mini"}
   ```
-- [ ] A new `.jsonl` file is created per session (keyed by session start time) so sessions are naturally separated
-- [ ] Implement in both `src/main.py` (CLI) and `src/app.py` (Streamlit) using a shared `ConversationLogger` class in `src/utils/log.py`
+- [x] A new `.jsonl` file is created per session (keyed by session start time) so sessions are naturally separated
+- [x] Implement in both `src/main.py` (CLI) and `src/app.py` (Streamlit) using a shared `ConversationLogger` class in `src/utils/log.py`
 
 ### 1.8.3 — Soul File Audit Log
 
-- [ ] Replace the unstructured `soul_worker.log` with a richer `data/logs/soul_changes.log`
-- [ ] Each patch entry records: timestamp, the patch dict that was applied, and a before/after snapshot of the changed keys (not the full file — just the modified paths)
-- [ ] Each "no patch" event is recorded as a single INFO line (timestamp + "no new facts")
-- [ ] Migrate all existing `_log.info` / `_log.debug` calls in `_patch_worker` and `_curiosity_worker` to the new logger
+- [x] Replace the unstructured `soul_worker.log` with a richer `data/logs/soul_changes.log`
+- [x] Each patch entry records: timestamp, the patch dict that was applied, and a before/after snapshot of the changed keys (not the full file — just the modified paths)
+- [x] Each "no patch" event is recorded as a single INFO line (timestamp + "no new facts")
+- [x] Migrate all existing `_log.info` / `_log.debug` calls in `_patch_worker` and `_curiosity_worker` to the new logger
 
 ### 1.8.4 — Short-Term Memory (Context Trim) Log
 
-- [ ] In `trim_history()` (`src/llm/client.py`), log to `data/logs/context_trim.log` whenever messages are dropped:
+- [x] In `trim_history()` (`src/llm/client.py`), log to `data/logs/context_trim.log` whenever messages are dropped:
   - Number of messages before and after trim
   - Content of each dropped message (role + first 120 chars of content)
   - Total character count before and after
-- [ ] Only log when messages are actually dropped (no-op trims are silent)
+- [x] Only log when messages are actually dropped (no-op trims are silent)
 
 ### 1.8.5 — Long-Term Memory Log (stub — filled in Phase 2)
 
-- [ ] Create `data/logs/memory.log` via `get_logger("memory")` now; leave it empty until Phase 2
+- [x] Create `data/logs/memory.log` via `get_logger("memory")` now; leave it empty until Phase 2
 - [ ] Phase 2 will add: every ChromaDB query (query text, top-K results, similarity scores, whether threshold was cleared), and every session summary write (timestamp, summary text, ChromaDB document ID)
 
 ### 1.8.6 — Streamlit Log Viewer
 
-- [ ] Replace the existing single "Worker log" expander with a tabbed `st.tabs` panel covering all four log files: **Conversations**, **Soul changes**, **Context trim**, **Memory**
-- [ ] Each tab shows the last 50 lines of the corresponding log file with a "Clear" button
-- [ ] If a log file does not exist yet (e.g. Memory before Phase 2), show a `st.caption("No log yet")` placeholder
+- [x] Replace the existing single "Worker log" expander with a tabbed `st.tabs` panel covering all four log files: **Conversations**, **Soul changes**, **Context trim**, **Memory**
+- [x] Each tab shows the last 50 lines of the corresponding log file with a "Clear" button
+- [x] If a log file does not exist yet (e.g. Memory before Phase 2), show a `st.caption("No log yet")` placeholder
 
 ### 1.8.7 — Test Coverage (`tests/test_logging.py`)
 
-- [ ] Test `ConversationLogger`: verify a `.jsonl` file is created in `tmp_path`, that each appended turn is valid JSON, and that role/content/ts fields are present
-- [ ] Test soul audit log: call `apply_patch()` on a `SoulFile` backed by `tmp_path` and verify the audit log contains the expected patch entry
-- [ ] Test context trim log: call `trim_history()` with a history that exceeds the limit and verify the trim log records the dropped messages
-- [ ] All tests use `tmp_path` fixtures and mock loggers pointed at temp directories — no production log files touched
-- [ ] Add a `conftest.py` fixture `log_dir(tmp_path)` that patches the `data/logs/` path globally for the test session
+- [x] Test `ConversationLogger`: verify a `.jsonl` file is created in `tmp_path`, that each appended turn is valid JSON, and that role/content/ts fields are present
+- [x] Test soul audit log: call `apply_patch()` on a `SoulFile` backed by `tmp_path` and verify the audit log contains the expected patch entry
+- [x] Test context trim log: call `trim_history()` with a history that exceeds the limit and verify the trim log records the dropped messages
+- [x] All tests use `tmp_path` fixtures and mock loggers pointed at temp directories — no production log files touched
+- [x] Add a `conftest.py` fixture `log_dir(tmp_path)` that patches the `data/logs/` path globally for the test session
+
+---
+
+## Phase 1.9 — Context Budget Management
+
+**Goal**: Ensure the assembled system prompt never silently overflows the model's context window. Measure every section before sending, protect the response headroom, and degrade gracefully — dropping the least-important content first — when the budget is tight.
+
+### 1.9.1 — Token Counting Utility
+
+- [ ] Add a `count_tokens(text: str) -> int` helper to `src/llm/context.py` — approximates as `len(text) // 4` (1 token ≈ 4 chars) for zero-dependency speed
+- [ ] Design the interface so a more accurate counter (e.g. `tiktoken`) can be swapped in later without changing call sites
+- [ ] Add a module-level `CHARS_PER_TOKEN = 4` constant so the approximation is easy to find and update
+
+### 1.9.2 — ContextBudget Class (`src/llm/context.py`)
+
+- [ ] Create `src/llm/context.py` with a `ContextBudget` dataclass holding the tier allocations:
+  ```
+  response_reserve  = 512 tokens  (hard floor, always protected)
+  system_soul_pct   = 20%  of (total - reserve)
+  history_pct       = 50%  of (total - reserve)
+  rag_vision_pct    = 20%  of (total - reserve)
+  misc_pct          = 10%  of (total - reserve)
+  ```
+- [ ] Implement `assemble(soul_text, history, rag_text, vision_text, time_text) -> AssembledContext` — measures each section, applies its budget, and returns both the (possibly trimmed) text for each section and a `trimmed: set[str]` indicating which sections were cut
+- [ ] `AssembledContext` should expose a `total_chars` property and a `was_trimmed` boolean for easy checking at the call site
+
+### 1.9.3 — Soul File Budget Trimming
+
+- [ ] Add an optional `budget_chars: int | None = None` parameter to `SoulFile.to_prompt_section()`
+- [ ] If `budget_chars` is set and the full YAML exceeds it, progressively drop sections in this order until it fits:
+  1. `facts`
+  2. `environment`
+  3. Extended `user` fields (keep `name`, `preferred_name`, `date_of_birth`; drop everything else)
+  4. `identity` non-essential fields (keep `name`, `persona`, `communication_style`; drop `capabilities`, `hardware`, `curiosity_queue`)
+- [ ] Log which sections were dropped via the context trim logger (Phase 1.8)
+- [ ] Add tests in `tests/test_soul.py` covering each trimming level
+
+### 1.9.4 — Conversation History Budget Trimming
+
+- [ ] Refactor `trim_history()` in `src/llm/client.py` to accept an explicit `budget_chars: int` rather than the current `limit_chars` constant so `ContextBudget` drives it directly
+- [ ] Preserve backwards compatibility: if called without the new parameter, fall back to the existing `CONTEXT_LIMIT_CHARS` default
+- [ ] Existing trim-logging behaviour (Phase 1.8, task 1.8.4) remains unchanged
+
+### 1.9.5 — RAG and Vision Budget Trimming
+
+- [ ] In Phase 2's `query_memory()` call site: pass the RAG budget from `ContextBudget` as a `max_chars` cap — reduce `n_results` until the combined result text fits
+- [ ] For vision context (Phase 5): if the vision summary exceeds its budget, truncate to the first sentence; if still over, drop entirely
+- [ ] Both trim events are logged to `context_trim.log`
+
+### 1.9.6 — Wire ContextBudget into Entry Points
+
+- [ ] `src/main.py`: replace the manual `system_prompt` string assembly with a call to `ContextBudget.assemble()`; pass the resulting sections to `OllamaClient`
+- [ ] `src/app.py`: same — call `ContextBudget.assemble()` in the per-message block; store `was_trimmed` in `st.session_state` for the sidebar indicator
+- [ ] `OllamaClient._build_payload()` receives the pre-assembled, budget-checked sections rather than a raw combined string
+
+### 1.9.7 — Streamlit Trim Indicator
+
+- [ ] After each message, if `st.session_state.get("context_trimmed")` is True, show a subtle `⚠ context trimmed` badge next to the message count caption in the sidebar
+- [ ] Clicking the badge (or the Context trim tab in the log viewer) opens the trim log automatically
+- [ ] Clear the flag at the start of each new message so the badge only reflects the most recent turn
+
+### 1.9.8 — Test Coverage (`tests/test_context.py`)
+
+- [ ] Test `count_tokens()` returns expected values for known strings
+- [ ] Test `ContextBudget.assemble()` with all sections populated — verify total stays within limit and `was_trimmed` is False
+- [ ] Test with an oversized soul section — verify `facts` is dropped before `identity`
+- [ ] Test with a history that alone exceeds the history budget — verify oldest pairs are dropped
+- [ ] Test with all sections simultaneously oversized — verify priority order is respected and response reserve is never touched
+- [ ] All tests are pure-Python with no Ollama dependency
 
 ---
 

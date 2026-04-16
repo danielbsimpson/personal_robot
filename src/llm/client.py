@@ -6,6 +6,7 @@ management, and a configurable system prompt.
 """
 
 import json
+import logging
 import sys
 from collections.abc import Iterator
 from typing import Optional
@@ -18,6 +19,21 @@ OLLAMA_BASE_URL = "http://localhost:11434"
 DEFAULT_MODEL = "phi4-mini"
 # Rough token budget before trimming oldest messages (1 token ≈ 4 chars)
 DEFAULT_CONTEXT_LIMIT = 4096
+
+# ---------------------------------------------------------------------------
+# Lazy trim logger — writes to data/logs/context_trim.log
+# ---------------------------------------------------------------------------
+
+_trim_log: Optional[logging.Logger] = None
+
+
+def _get_trim_log() -> logging.Logger:
+    """Return the context_trim logger, creating it on first call."""
+    global _trim_log
+    if _trim_log is None:
+        from src.utils.log import get_logger
+        _trim_log = get_logger("context_trim")
+    return _trim_log
 
 
 class OllamaClient:
@@ -126,10 +142,25 @@ def trim_history(messages: list[dict], limit_chars: int = DEFAULT_CONTEXT_LIMIT 
     Returns:
         Trimmed messages list.
     """
+    original_count = len(messages)
+    original_chars = sum(len(m["content"]) for m in messages)
+    dropped: list[dict] = []
+
     while True:
         total = sum(len(m["content"]) for m in messages)
         if total <= limit_chars or len(messages) <= 2:
             break
-        # Drop the oldest user+assistant pair (first two messages)
+        dropped.extend(messages[:2])
         messages = messages[2:]
+
+    if dropped:
+        _get_trim_log().info(
+            "trimmed %d\u2192%d messages (%d\u2192%d chars) | dropped: %s",
+            original_count,
+            len(messages),
+            original_chars,
+            sum(len(m["content"]) for m in messages),
+            [{"role": m["role"], "preview": m["content"][:120]} for m in dropped],
+        )
+
     return messages

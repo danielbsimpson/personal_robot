@@ -14,6 +14,7 @@ import sys
 from src.llm.client import OllamaClient, trim_history, OLLAMA_BASE_URL
 from src.llm.prompts import BASE_SYSTEM_PROMPT, get_time_section
 from src.memory.soul import SoulFile, maybe_update_soul, maybe_grow_curiosity, SOUL_UPDATE_EVERY, SOUL_CURIOSITY_EVERY
+from src.utils.log import ConversationLogger
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -75,6 +76,7 @@ def main() -> None:
 
     conversation: list[dict] = []
     message_count = 0
+    conv_logger = ConversationLogger(model=MODEL)
 
     while True:
         user_text = get_user_input("You: ")
@@ -88,6 +90,7 @@ def main() -> None:
 
         # Add user message to history
         conversation.append({"role": "user", "content": user_text})
+        conv_logger.log_turn("user", user_text)
 
         # Trim history to stay within context budget
         conversation = trim_history(conversation, limit_chars=CONTEXT_LIMIT_CHARS)
@@ -104,6 +107,7 @@ def main() -> None:
 
         # Add assistant response to history
         conversation.append({"role": "assistant", "content": response})
+        conv_logger.log_turn("assistant", response)
         print()  # blank line between turns
 
         # Periodic soul patch check — runs in background, never blocks

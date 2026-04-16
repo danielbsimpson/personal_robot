@@ -13,6 +13,7 @@ No cloud APIs. No subscriptions. Everything runs on your hardware.
 - [Phase Summary](#phase-summary)
 - [Hardware Requirements](#hardware-requirements)
 - [Software Stack](#software-stack)
+- [Models](#models)
 - [Project Structure](#project-structure)
 - [Getting Started](#getting-started)
 - [Raspberry Pi Deployment](#raspberry-pi-deployment)
@@ -119,6 +120,42 @@ A unified logging layer that writes structured, human-readable records for every
 - **Long-term memory log** (`data/logs/memory.log`): for Phase 2 — log every ChromaDB query (top-K results + similarity scores) and every session summary write. Entries record whether the relevance threshold was cleared and what was injected.
 - **Streamlit log viewer**: the existing "Worker log" sidebar expander is replaced with a tabbed viewer covering all four log files, with per-log clear buttons.
 - **Test coverage**: `tests/test_logging.py` verifies that conversation, soul, trim, and memory log files are created and populated correctly using `tmp_path` fixtures; no live LLM required.
+
+### Phase 1.9 — Context Budget Management
+
+A budget-aware context assembly layer that measures every section before sending it to the LLM, ensures the model always has headroom to reply, and gracefully degrades the least-important sections rather than silently overflowing.
+
+#### Strategy
+
+The effective context window is divided into percentage-based tiers, calculated at assembly time on every message:
+
+| Tier | Allocation | Contents |
+|---|---|---|
+| Response reserve | 512 tokens (hard floor) | Always protected — guaranteed headroom for the LLM's reply |
+| System + soul | 20% of remaining | `BASE_SYSTEM_PROMPT` + soul file (`## About Me`) |
+| Conversation history | 50% of remaining | Rolling message list, trimmed from oldest first |
+| RAG + vision | 20% of remaining | `## Relevant Memory` + `## Current Environment` |
+| Time + misc | 10% of remaining | `## Current Time` and any future injected sections |
+
+> Rough numbers at the working 4 096-token cap: ~660 tokens for soul/system, ~1 640 for history, ~660 for RAG+vision, ~330 for time. Reserve is always 512 on top.
+
+#### Priority and Degradation
+
+When a tier is over-budget, sections are cut in this order (highest priority survives longest):
+
+1. **Soul file** — trim `facts` and `environment` sections first; `identity` and `user` core (name, persona, communication style) are never cut
+2. **Conversation history** — drop oldest message pairs first (existing `trim_history()` behaviour, now budget-driven)
+3. **RAG memories** — reduce from top-K to top-1, then drop entirely if still over
+4. **Vision context** — truncate to a one-sentence summary, then drop
+5. **Time section** — always the last to go; dropped only in extreme cases
+
+#### Implementation
+
+- **`src/llm/context.py`** — `ContextBudget` class: holds the tier percentages and token/char limits, exposes `assemble(soul, history, rag, vision, time) -> dict[str, str]` which returns each section at its trimmed size and a `was_trimmed: bool` flag per section
+- **Token counting** — approximated as `len(text) // 4` (1 token ≈ 4 chars) for zero-dependency speed; a more accurate `tiktoken`-based counter can be swapped in later via a single interface
+- **Soul trimmer** (`src/memory/soul.py`) — `to_prompt_section(budget_chars: int)` gains an optional budget parameter; if the full YAML exceeds the budget it progressively drops `facts` → `environment` → extended `user` fields until it fits
+- **Logging** — whenever any section is trimmed, an entry is appended to `data/logs/context_trim.log` (built in Phase 1.8) recording which sections were cut, by how many tokens, and the final assembled size
+- **Streamlit indicator** — if any trimming occurred on the last message, a subtle `⚠ context trimmed` badge appears next to the message count in the sidebar; clicking it opens the Context trim log tab
 
 ### Phase 2 — Persistent Memory (RAG)
 
@@ -246,6 +283,53 @@ Package everything as a self-contained robot with motors, running on a Raspberry
 
 ---
 
+## Models
+
+All models run locally — no API keys, no internet required at inference time.
+
+### Language Models (LLM)
+
+| Model | Parameters | Quant | Size | Context Window | Hardware | Docs |
+|---|---|---|---|---|---|---|
+| [Phi-4-mini-instruct](https://huggingface.co/microsoft/phi-4-mini-instruct) *(primary)* | 3.8B | Q4_K_M | 2.5 GB | 128K tokens | RTX 4060 (GPU) | [Model card](https://huggingface.co/microsoft/phi-4-mini-instruct) · [Technical report](https://arxiv.org/abs/2503.01743) |
+| [Llama 3.2 3B](https://ollama.com/library/llama3.2) *(alternative)* | 3B | Q4_K_M | 2.0 GB | 128K tokens | RTX 4060 (GPU) | [Model card](https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct) · [Meta blog](https://ai.meta.com/blog/llama-3-2-connect-2024-vision-edge-mobile-devices/) |
+| [Phi-3-mini-4k-instruct](https://huggingface.co/microsoft/Phi-3-mini-4k-instruct) *(Pi)* | 3.8B | Q4_K_M | 2.2 GB | 4K tokens | Raspberry Pi 5 (CPU) | [Model card](https://huggingface.co/microsoft/Phi-3-mini-4k-instruct) |
+| [TinyLlama 1.1B](https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0) *(Pi fallback)* | 1.1B | Q4_K_M | ~0.7 GB | 2K tokens | Raspberry Pi 5 (CPU) | [Model card](https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0) · [Paper](https://arxiv.org/abs/2401.02385) |
+
+> **Active model** on this machine: `phi4-mini` via Ollama. Context window is intentionally capped at 4K chars (~1K tokens) in code to keep GPU VRAM usage predictable; the model's full 128K window is available if needed.
+
+### Embeddings
+
+| Model | Dimensions | Max Input | Size | Hardware | Docs |
+|---|---|---|---|---|---|
+| [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) | 384 | 256 tokens | 22 MB | CPU | [Model card](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) · [SBERT docs](https://www.sbert.net/docs/sentence_transformer/pretrained_models.html) |
+
+### Speech-to-Text (Whisper)
+
+| Model | Size | VRAM | WER (en) | Hardware | Docs |
+|---|---|---|---|---|---|
+| [faster-whisper small.en](https://huggingface.co/Systran/faster-whisper-small.en) *(laptop)* | ~244 MB | ~2 GB | ~4% | RTX 4060 (GPU) | [Repo](https://github.com/SYSTRAN/faster-whisper) · [Model card](https://huggingface.co/Systran/faster-whisper-small.en) |
+| [faster-whisper tiny.en](https://huggingface.co/Systran/faster-whisper-tiny.en) *(Pi)* | ~39 MB | CPU only | ~6% | Raspberry Pi 5 (CPU) | [Model card](https://huggingface.co/Systran/faster-whisper-tiny.en) |
+
+> Whisper processes audio in 30-second chunks; there is no token context window in the traditional sense.
+
+### Text-to-Speech
+
+| Model | Type | Latency | Hardware | Docs |
+|---|---|---|---|---|
+| [Piper TTS](https://github.com/OHF-Voice/piper1-gpl) *(primary)* | Neural VITS | Very low | CPU (laptop + Pi) | [Repo](https://github.com/OHF-Voice/piper1-gpl) · [Voice list](https://github.com/rhasspy/piper/blob/master/VOICES.md) |
+| [Kokoro TTS](https://github.com/hexgrad/kokoro) *(alternative)* | StyleTTS2-based | Low | CPU / GPU | [Repo](https://github.com/hexgrad/kokoro) · [HF space](https://huggingface.co/hexgrad/Kokoro-82M) |
+
+### Vision
+
+| Model | Task | Size | Context / Input | Hardware | Docs |
+|---|---|---|---|---|---|
+| [YOLOv8n](https://docs.ultralytics.com/models/yolov8/) | Object detection | ~6 MB | Single frame | RTX 4060 (GPU) | [Docs](https://docs.ultralytics.com/models/yolov8/) · [Paper](https://arxiv.org/abs/2305.09972) |
+| [Qwen2.5-VL-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct) | Vision-language (VLM) | ~5 GB (4-bit) | 32K tokens + image | RTX 4060 (GPU) | [Model card](https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct) · [Paper](https://arxiv.org/abs/2502.13923) |
+| [moondream2](https://huggingface.co/vikhyatk/moondream2) | Vision-language (Pi) | ~1.8 GB | 2K tokens + image | Raspberry Pi 5 (CPU) | [Model card](https://huggingface.co/vikhyatk/moondream2) · [Repo](https://github.com/vikhyatk/moondream) |
+
+---
+
 ## Project Structure
 
 ```
@@ -258,6 +342,7 @@ personal_robot/
 │   ├── llm/
 │   │   ├── __init__.py
 │   │   ├── client.py         # Ollama / llama.cpp wrapper
+│   │   ├── context.py        # ContextBudget — percentage-based context assembly
 │   │   └── prompts.py        # System prompt templates
 │   ├── utils/
 │   │   ├── __init__.py
@@ -297,6 +382,7 @@ personal_robot/
 └── tests/
     ├── test_llm.py
     ├── test_soul.py
+    ├── test_context.py
     ├── test_logging.py
     ├── test_memory.py
     ├── test_audio.py
