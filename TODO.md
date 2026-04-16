@@ -88,38 +88,38 @@ This is distinct from Phase 2 (episodic RAG memory):
 
 ### 1.7.1 — Soul File Format (`data/soul.yaml`)
 
-- [ ] Define a YAML schema with the following top-level sections:
+- [x] Define a YAML schema with the following top-level sections:
   ```yaml
   identity:        # Robot's name, personality traits, capabilities
   user:            # User's name, preferences, facts learned about them
   environment:     # Location, connected hardware, known surroundings
   facts:           # General facts the robot has learned and wants to retain
   ```
-- [ ] Create a default `data/soul.yaml` seeded with the robot's base identity (name, phase capabilities, hardware)
-- [ ] Add `data/soul.yaml` to `.gitignore` so personal facts are not committed
+- [x] Create a default `data/soul.yaml` seeded with the robot's base identity (name: Orion, hardware, capabilities) and user name (Daniel Bowman Simpson)
+- [x] Add `data/soul.yaml` to `.gitignore` so personal facts are not committed — already covered by the `data/` rule
 
 ### 1.7.2 — Soul File Module (`src/memory/soul.py`)
 
-- [ ] Create a `SoulFile` class that reads and writes `data/soul.yaml`
-- [ ] Implement `load() -> dict` — parses YAML and returns the full soul dict
-- [ ] Implement `to_prompt_section() -> str` — formats the soul as a `## About Me` block for injection into the system prompt
-- [ ] Implement `update(section: str, key: str, value: str)` — writes a single fact to the correct section and saves the file
-- [ ] Implement `apply_patch(patch: dict)` — bulk-applies a dict of `{section: {key: value}}` updates from the LLM
-- [ ] Add file locking so concurrent writes (e.g., from Streamlit) don't corrupt the file
+- [x] Create a `SoulFile` class that reads and writes `data/soul.yaml`
+- [x] Implement `load() -> dict` — parses YAML and returns the full soul dict
+- [x] Implement `to_prompt_section() -> str` — formats the soul as a `## About Me` YAML block for injection into the system prompt
+- [x] Implement `update(section: str, key: str, value: str)` — writes a single fact to the correct section and saves the file
+- [x] Implement `apply_patch(patch: dict)` — bulk-applies a dict of `{section: {key: value}}` updates from the LLM
+- [x] Add file locking via a module-level `threading.Lock` + atomic temp-file rename so concurrent writes never corrupt the file
 
 ### 1.7.3 — LLM-Driven Updates
 
-- [ ] Add a post-response step that prompts the LLM: *"Did you learn any new facts worth remembering? If so, output a JSON patch block, otherwise output nothing."*
-- [ ] Parse the LLM's response for a fenced `json` block shaped like `{"section": {"key": "value"}}`
-- [ ] Call `soul.apply_patch(patch)` if a valid patch is found; silently skip if the LLM outputs nothing
-- [ ] Ensure the update prompt only runs every N turns (e.g., every 5 messages) to avoid overhead
+- [x] Add `SOUL_PATCH_PROMPT` to `src/llm/prompts.py` — instructs the LLM to output a fenced JSON patch block if new facts were learned, or nothing at all
+- [x] `_extract_json_patch(text)` helper parses the first ` ```json ... ``` ` block from the LLM response
+- [x] `_patch_worker` daemon thread: calls a fresh `OllamaClient`, gets patch, calls `soul.apply_patch()` if valid
+- [x] `maybe_update_soul()` spawns the daemon thread — fires every `SOUL_UPDATE_EVERY = 3` user messages
 
 ### 1.7.4 — Integrate Soul File into Conversation Loop
 
-- [ ] On startup in `src/main.py`: load soul file and inject `soul.to_prompt_section()` into the system prompt
-- [ ] On startup in `src/app.py`: same injection, reload soul on each new session
-- [ ] Add a "Soul file" expander in the Streamlit sidebar showing the current YAML contents (read-only view)
-- [ ] Write `tests/test_soul.py` — test load, update, apply_patch, and prompt injection
+- [x] `src/main.py` — loads soul on startup, injects `soul.to_prompt_section()` into system prompt, fires `maybe_update_soul` every 3 turns
+- [x] `src/app.py` — same soul injection per message, soul section appended to the user-editable system prompt; `message_count` tracked in `st.session_state`
+- [x] Added a "🔮 Soul file" expander in the Streamlit sidebar showing live YAML contents (read-only view, re-reads file on each render to reflect background updates)
+- [x] Write `tests/test_soul.py` — 21/21 passed (load, save, update, apply_patch, to_prompt_section, as_yaml_string, _extract_json_patch)
 
 ---
 

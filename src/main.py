@@ -11,8 +11,9 @@ Commands during conversation:
 
 import sys
 
-from src.llm.client import OllamaClient, trim_history
+from src.llm.client import OllamaClient, trim_history, OLLAMA_BASE_URL
 from src.llm.prompts import BASE_SYSTEM_PROMPT
+from src.memory.soul import SoulFile, maybe_update_soul, maybe_grow_curiosity, SOUL_UPDATE_EVERY, SOUL_CURIOSITY_EVERY
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -52,9 +53,16 @@ def get_user_input(prompt: str = "You: ") -> str:
 def main() -> None:
     print_banner()
 
+    # Load soul file and inject into system prompt
+    soul = SoulFile()
+    soul_section = soul.to_prompt_section()
+    system_prompt = BASE_SYSTEM_PROMPT
+    if soul_section:
+        system_prompt = f"{BASE_SYSTEM_PROMPT}\n\n{soul_section}"
+
     client = OllamaClient(
         model=MODEL,
-        system_prompt=BASE_SYSTEM_PROMPT,
+        system_prompt=system_prompt,
     )
 
     if not client.is_available():
@@ -65,6 +73,7 @@ def main() -> None:
     print("[OK] Ollama is running. Starting conversation...\n")
 
     conversation: list[dict] = []
+    message_count = 0
 
     while True:
         user_text = get_user_input("You: ")
@@ -95,6 +104,13 @@ def main() -> None:
         # Add assistant response to history
         conversation.append({"role": "assistant", "content": response})
         print()  # blank line between turns
+
+        # Periodic soul patch check — runs in background, never blocks
+        message_count += 1
+        if message_count % SOUL_UPDATE_EVERY == 0:
+            maybe_update_soul(soul, conversation, MODEL, OLLAMA_BASE_URL)
+        if message_count % SOUL_CURIOSITY_EVERY == 0:
+            maybe_grow_curiosity(soul, conversation, MODEL, OLLAMA_BASE_URL)
 
 
 if __name__ == "__main__":

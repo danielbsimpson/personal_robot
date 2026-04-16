@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.llm.client import OllamaClient, trim_history, OLLAMA_BASE_URL, DEFAULT_MODEL
 from src.llm.prompts import BASE_SYSTEM_PROMPT
+from src.memory.soul import SoulFile, maybe_update_soul, maybe_grow_curiosity, SOUL_UPDATE_EVERY, SOUL_CURIOSITY_EVERY
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -98,6 +99,9 @@ if "system_prompt" not in st.session_state:
 if "selected_model" not in st.session_state:
     st.session_state.selected_model: str = DEFAULT_MODEL
 
+if "message_count" not in st.session_state:
+    st.session_state.message_count: int = 0
+
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
@@ -146,6 +150,15 @@ with st.sidebar:
     # Button click triggers a natural rerun; no explicit st.rerun() needed.
     if st.button("🗑️ Clear conversation", use_container_width=True):
         st.session_state.conversation = []
+        st.session_state.message_count = 0
+
+    st.divider()
+
+    # --- Soul file viewer ---
+    with st.expander("🔮 Soul file", expanded=False):
+        soul_view = SoulFile()
+        st.code(soul_view.as_yaml_string(), language="yaml")
+        st.caption("Updated automatically during conversation. You can also edit `data/soul.yaml` directly.")
 
     st.caption(f"Model: `{st.session_state.selected_model}`")
     st.caption(f"History: {len(st.session_state.conversation)} messages")
@@ -165,10 +178,16 @@ for msg in st.session_state.conversation:
 user_input = st.chat_input("Type a message…")
 
 if user_input:
-    # Build the client with current sidebar settings
+    # Build the client — compose system prompt with soul section appended
+    soul = SoulFile()
+    soul_section = soul.to_prompt_section()
+    combined_prompt = st.session_state.system_prompt
+    if soul_section:
+        combined_prompt = f"{st.session_state.system_prompt}\n\n{soul_section}"
+
     client = OllamaClient(
         model=st.session_state.selected_model,
-        system_prompt=st.session_state.system_prompt,
+        system_prompt=combined_prompt,
     )
 
     if not check_ollama_available(OLLAMA_BASE_URL):
@@ -193,3 +212,20 @@ if user_input:
     st.session_state.conversation.append(
         {"role": "assistant", "content": response_text}
     )
+
+    # Periodic soul patch check — background thread, never blocks the UI
+    st.session_state.message_count += 1
+    if st.session_state.message_count % SOUL_UPDATE_EVERY == 0:
+        maybe_update_soul(
+            soul,
+            st.session_state.conversation,
+            st.session_state.selected_model,
+            OLLAMA_BASE_URL,
+        )
+    if st.session_state.message_count % SOUL_CURIOSITY_EVERY == 0:
+        maybe_grow_curiosity(
+            soul,
+            st.session_state.conversation,
+            st.session_state.selected_model,
+            OLLAMA_BASE_URL,
+        )
