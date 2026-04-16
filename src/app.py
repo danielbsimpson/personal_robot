@@ -20,7 +20,7 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.llm.client import OllamaClient, trim_history, OLLAMA_BASE_URL, DEFAULT_MODEL
-from src.llm.prompts import BASE_SYSTEM_PROMPT
+from src.llm.prompts import BASE_SYSTEM_PROMPT, get_time_section
 from src.memory.soul import SoulFile, maybe_update_soul, maybe_grow_curiosity, SOUL_UPDATE_EVERY, SOUL_CURIOSITY_EVERY, SOUL_LOG_PATH
 
 # ---------------------------------------------------------------------------
@@ -211,12 +211,13 @@ for msg in st.session_state.conversation:
 user_input = st.chat_input("Type a message…")
 
 if user_input:
-    # Build the client — compose system prompt with soul section appended
+    # Build the client — compose system prompt with soul section and current time appended
     soul = SoulFile()
     soul_section = soul.to_prompt_section()
     combined_prompt = st.session_state.system_prompt
     if soul_section:
         combined_prompt = f"{st.session_state.system_prompt}\n\n{soul_section}"
+    combined_prompt = f"{combined_prompt}\n\n{get_time_section()}"
 
     client = OllamaClient(
         model=st.session_state.selected_model,

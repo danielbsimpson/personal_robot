@@ -254,6 +254,56 @@ This is distinct from Phase 2 (episodic RAG memory):
 
 ---
 
+## Phase 5.5 — Face Recognition
+
+**Goal**: Orion can detect faces in his camera feed and identify known people (Daniel and Danielle) by name, greet them on first sighting in a session, and ask who an unknown person is so he can learn them.
+
+### 5.5.1 — Install Dependencies
+
+- [ ] Add `face_recognition` and `dlib` to `requirements.txt`
+- [ ] Add pre-built dlib wheel reference to `requirements_pi.txt` for Raspberry Pi aarch64 (avoids a slow source build)
+- [ ] Verify `face_recognition` can locate faces on a test photo: `face_recognition.face_locations(image)`
+
+### 5.5.2 — Face Enrollment
+
+- [ ] Create `data/faces/` directory (gitignored — contains personal photos and encodings)
+- [ ] Write a CLI enrollment script (`scripts/enroll_face.py`):
+  - Takes `--name` and `--image` (or captures from webcam) as inputs
+  - Computes the 128-d face encoding with `face_recognition.face_encodings()`
+  - Saves `data/faces/<name>.npy` (numpy array of the encoding)
+- [ ] Enroll Daniel and Danielle using good-quality reference photos
+- [ ] Support multiple reference images per person (average their encodings for robustness)
+
+### 5.5.3 — Face Recognition Module (`src/vision/faces.py`)
+
+- [ ] Create a `FaceRecogniser` class that loads all `data/faces/*.npy` encodings at init time
+- [ ] Implement `identify(frame: np.ndarray) -> list[str]` — detects all faces in the frame and returns a list of recognised names (or `"unknown"` for each unmatched face)
+- [ ] Use a configurable Euclidean distance threshold (default `0.5`) — faces above the threshold are treated as unknown
+- [ ] Implement `enroll(name: str, frame: np.ndarray)` — extracts the encoding from a live frame and saves it to `data/faces/<name>.npy`
+- [ ] Add `recognition_interval` (e.g. every 5 seconds) to avoid running inference every frame
+
+### 5.5.4 — LLM Integration
+
+- [ ] On recognition, inject a `## People Present` section into the LLM context listing identified names
+- [ ] Track a per-session `greeted` set so Orion greets each person only once per conversation (e.g. "Hey Daniel!" on first detection, then silent injection thereafter)
+- [ ] Wire the greeting into TTS output (Phase 4) when available; fall back to print in CLI mode
+- [ ] Update the system prompt guideline so Orion uses recognised names naturally in conversation
+
+### 5.5.5 — Unknown Face Handling
+
+- [ ] When `"unknown"` is returned and no greeting has been issued for that face region, have Orion ask: "I see someone I don't recognise — who are you?"
+- [ ] If a name is provided in the response, call `FaceRecogniser.enroll(name, frame)` to save them
+- [ ] Optionally update the soul file `user` or `facts` section with a note that a new person was met
+- [ ] Implement a cooldown so Orion does not ask repeatedly for the same unknown face in one session
+
+### 5.5.6 — Raspberry Pi Compatibility
+
+- [ ] Verify `face_recognition` installs cleanly on Raspberry Pi OS 64-bit (Bookworm)
+- [ ] Benchmark recognition latency on Pi 5 CPU; target <2 seconds per frame at `recognition_interval`
+- [ ] If too slow, fall back to OpenCV Haar cascade for detection + `face_recognition` encoding only on detected regions (skips full-frame scan)
+
+---
+
 ## Phase 6 — Physical Robot (Raspberry Pi)
 
 **Goal**: Run a lightweight version of the entire pipeline on a Raspberry Pi 5 with physical motor control.

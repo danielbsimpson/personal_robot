@@ -12,7 +12,7 @@ Commands during conversation:
 import sys
 
 from src.llm.client import OllamaClient, trim_history, OLLAMA_BASE_URL
-from src.llm.prompts import BASE_SYSTEM_PROMPT
+from src.llm.prompts import BASE_SYSTEM_PROMPT, get_time_section
 from src.memory.soul import SoulFile, maybe_update_soul, maybe_grow_curiosity, SOUL_UPDATE_EVERY, SOUL_CURIOSITY_EVERY
 
 # ---------------------------------------------------------------------------
@@ -59,6 +59,7 @@ def main() -> None:
     system_prompt = BASE_SYSTEM_PROMPT
     if soul_section:
         system_prompt = f"{BASE_SYSTEM_PROMPT}\n\n{soul_section}"
+    system_prompt = f"{system_prompt}\n\n{get_time_section()}"
 
     client = OllamaClient(
         model=MODEL,

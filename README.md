@@ -29,6 +29,7 @@ This project builds a personal robot from the ground up using only open-source t
 3. **Voice Input** — Transcribe spoken words from a microphone in real time
 4. **Voice Output** — Have the robot speak responses through a speaker
 5. **Vision** — Identify surroundings using a camera and feed context to the LLM
+5.5. **Face Recognition** — Detect and identify known people (Daniel, Danielle) and greet them by name
 6. **Physical Robot** — Deploy everything to a Raspberry Pi controlling motors and wheels
 
 ---
@@ -148,6 +149,17 @@ Use a USB camera to capture the robot's surroundings, identify objects and scene
 - **Lightweight alternative for Pi**: [moondream2](https://huggingface.co/vikhyatk/moondream2) — 1.8B VLM optimised for edge devices
 - **Flow**: Camera frame → YOLOv8 detection list + optional VLM scene caption → injected into LLM context window as a "vision summary"
 
+### Phase 5.5 — Face Recognition
+
+Teach Orion to detect and identify people he sees — greeting Daniel and Danielle by name, and asking who an unrecognised person is so he can learn them.
+
+- **Library**: [`face_recognition`](https://github.com/ageitgey/face_recognition) (dlib-backed) — CPU-only, works on both laptop and Raspberry Pi ARM64
+- **Enrollment**: capture reference photos of known people and store 128-dimensional face encodings locally in `data/faces/`; manual enrollment via a CLI helper script
+- **Recognition flow**: on each camera frame, detect faces → compare encodings against enrolled entries with a Euclidean distance threshold → return the best match (or `"unknown"` if none clears the threshold)
+- **LLM integration**: inject recognised identities silently under a `## People Present` section in the LLM context so Orion can refer to them naturally; on first recognition in a session, greet them by name aloud (via TTS)
+- **Unknown face handling**: when an unrecognised face is detected, Orion asks who the person is and optionally enrolls them with their permission — the new encoding is saved to `data/faces/` and the soul file `user` section is updated
+- **Pi-compatible**: dlib and `face_recognition` build cleanly on Raspberry Pi OS 64-bit (aarch64) with a pre-compiled wheel; inference stays on CPU alongside the LLM GPU workload on the laptop
+
 ### Phase 6 — Physical Robot (Raspberry Pi)
 
 Package everything as a self-contained robot with motors, running on a Raspberry Pi 5.
@@ -215,6 +227,7 @@ Package everything as a self-contained robot with motors, running on a Raspberry
 | Vision (detection) | [YOLOv8](https://github.com/ultralytics/ultralytics) | Real-time object detection |
 | Vision (VLM) | [Qwen2.5-VL-7B](https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct) | Scene description + visual Q&A |
 | Camera capture | [OpenCV](https://opencv.org/) | Cross-platform, well-supported |
+| Face recognition | [`face_recognition`](https://github.com/ageitgey/face_recognition) (dlib) | CPU-only, Pi-compatible, simple enrollment API |
 | Audio I/O | [sounddevice](https://python-sounddevice.readthedocs.io/) | Cross-platform microphone/speaker |
 | Motor control | [gpiozero](https://gpiozero.readthedocs.io/) | Raspberry Pi GPIO abstraction |
 | Language | Python 3.11 | Universal support across all libraries |
@@ -247,7 +260,8 @@ personal_robot/
 │   │   ├── __init__.py
 │   │   ├── camera.py         # OpenCV frame capture
 │   │   ├── detector.py       # YOLOv8 object detection
-│   │   └── vlm.py            # Vision-language model (Qwen2.5-VL)
+│   │   ├── vlm.py            # Vision-language model (Qwen2.5-VL)
+│   │   └── faces.py          # face_recognition enroll + identify
 │   ├── robot/
 │   │   ├── __init__.py
 │   │   └── motors.py         # gpiozero motor control (Pi only)

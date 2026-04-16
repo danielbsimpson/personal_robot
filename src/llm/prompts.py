@@ -2,6 +2,8 @@
 System prompt templates for the personal robot LLM.
 """
 
+from datetime import datetime
+
 BASE_SYSTEM_PROMPT = """You are Orion, a personal robot assistant. You are casual, warm, and conversational — like a knowledgeable friend.
 
 You have the following capabilities (which will be added over time):
@@ -82,3 +84,20 @@ Conversation:
 {conversation}
 
 Write only the summary paragraph, nothing else."""
+
+
+# ---------------------------------------------------------------------------
+# Time context helper
+# ---------------------------------------------------------------------------
+
+def get_time_section() -> str:
+    """Return a '## Current Time' prompt section with the local date and time."""
+    now = datetime.now()
+    # Build padding-free day/hour manually for cross-platform compatibility
+    day = now.day
+    hour_24 = now.hour
+    hour_12 = hour_24 % 12 or 12
+    am_pm = "AM" if hour_24 < 12 else "PM"
+    date_str = now.strftime(f"%A, %B {day}, %Y")
+    time_str = f"{hour_12}:{now.strftime('%M')} {am_pm}"
+    return f"## Current Time\n\n{date_str} — {time_str}"
