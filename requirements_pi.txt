@@ -1,0 +1,34 @@
+# ==============================================================================
+# Personal Robot — Raspberry Pi Dependencies
+# Python 3.11 | Raspberry Pi 5 (8GB) | CPU only
+# ==============================================================================
+
+# --- LLM (via llama-cpp-python, compiled for ARM) ---
+# llama-cpp-python is compiled from source on Pi — see raspberry_pi/setup.sh
+# llama-cpp-python  # do NOT pip install this here; build from source
+
+# --- Memory (RAG) ---
+chromadb>=0.6.0
+sentence-transformers>=3.0.0
+
+# --- Speech-to-Text ---
+faster-whisper>=1.1.0    # Uses tiny.en model on CPU
+sounddevice>=0.4.6
+numpy>=1.26.0
+
+# --- Text-to-Speech ---
+# Piper TTS used as prebuilt aarch64 binary — see raspberry_pi/setup.sh
+
+# --- Vision ---
+opencv-python-headless>=4.9.0   # Headless — no GUI dependencies needed on Pi
+ultralytics>=8.3.0               # YOLOv8 nano (CPU inference)
+
+# --- Motor Control ---
+gpiozero>=2.0            # GPIO abstraction for motor control
+# RPi.GPIO is the backend; installed via apt: sudo apt install python3-rpi.gpio
+
+# --- Utilities ---
+requests>=2.32.0
+Pillow>=10.0.0
+PyYAML>=6.0
+python-dotenv>=1.0.0
