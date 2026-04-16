@@ -108,6 +108,18 @@ Give the LLM a persistent, human-readable YAML file that defines its identity an
 - **Scope — identity layer only**: the soul file is the *always-on* layer injected into every prompt. It should stay compact and contain only stable, perpetually-relevant facts (Orion's identity, Daniel's core profile). Episodic knowledge — what was discussed in past sessions, situational preferences, one-off facts — belongs in Phase 2 RAG, not in the soul file's `facts` section.
 - **Distinct from RAG**: the soul file is structured and hand-editable; Phase 2 RAG handles unstructured episodic search over conversation history
 
+### Phase 1.8 — Logging & Observability
+
+A unified logging layer that writes structured, human-readable records for every significant event — so changes to the soul file, the in-context conversation window, and the long-term memory store can all be reviewed after the fact.
+
+- **Central log setup** (`src/utils/log.py`): single `get_logger(name)` factory that writes to both a rotating file under `data/logs/` and the console (DEBUG to file, WARNING to console). All modules import from here instead of configuring their own handlers.
+- **Conversation log** (`data/logs/conversations/`): every turn is appended to a per-session `.jsonl` file — one JSON object per line containing timestamp, role, content, and active model. Lets you replay any past session exactly as it happened.
+- **Soul file audit log** (`data/logs/soul_changes.log`): whenever a patch is applied, the full before/after diff is recorded. Replaces the existing unstructured `soul_worker.log` with a richer, diff-based format.
+- **Short-term memory log** (`data/logs/context_trim.log`): each time the rolling conversation history is trimmed, log the messages that were dropped and the new history length. Makes context window behaviour visible.
+- **Long-term memory log** (`data/logs/memory.log`): for Phase 2 — log every ChromaDB query (top-K results + similarity scores) and every session summary write. Entries record whether the relevance threshold was cleared and what was injected.
+- **Streamlit log viewer**: the existing "Worker log" sidebar expander is replaced with a tabbed viewer covering all four log files, with per-log clear buttons.
+- **Test coverage**: `tests/test_logging.py` verifies that conversation, soul, trim, and memory log files are created and populated correctly using `tmp_path` fixtures; no live LLM required.
+
 ### Phase 2 — Persistent Memory (RAG)
 
 Give the robot long-term episodic memory that persists across conversations. This is the *selective* long-term memory layer — Orion only draws on it when the current conversation makes it relevant. The in-conversation rolling message list already serves as short-term memory; this phase adds cross-session retrieval on top.
@@ -247,6 +259,9 @@ personal_robot/
 │   │   ├── __init__.py
 │   │   ├── client.py         # Ollama / llama.cpp wrapper
 │   │   └── prompts.py        # System prompt templates
+│   ├── utils/
+│   │   ├── __init__.py
+│   │   └── log.py            # Central logging factory (get_logger)
 │   ├── memory/
 │   │   ├── __init__.py
 │   │   ├── vector_store.py   # ChromaDB read/write
@@ -268,6 +283,11 @@ personal_robot/
 │   ├── app.py                # Streamlit chat UI
 │   └── main.py               # CLI conversation loop
 ├── data/
+│   ├── logs/                     # All runtime logs (gitignored)
+│   │   ├── conversations/        # Per-session JSONL turn logs
+│   │   ├── soul_changes.log      # Soul file patch diffs
+│   │   ├── context_trim.log      # Short-term memory trim events
+│   │   └── memory.log            # RAG retrieval + write events (Phase 2)
 │   └── memory/               # Persistent ChromaDB files (gitignored)
 ├── models/                   # Downloaded GGUF / ONNX models (gitignored)
 ├── raspberry_pi/
@@ -276,6 +296,8 @@ personal_robot/
 │   └── main_pi.py            # Lightweight Pi entry point
 └── tests/
     ├── test_llm.py
+    ├── test_soul.py
+    ├── test_logging.py
     ├── test_memory.py
     ├── test_audio.py
     └── test_vision.py
@@ -313,6 +335,23 @@ personal_robot/
 ```
 
 Opens at `http://localhost:8501`. Use the sidebar to switch models, edit the system prompt, or clear the conversation.
+
+### View runtime logs
+
+All logs are written to `data/logs/` (gitignored). The most useful files:
+
+| Log file | What it records |
+|---|---|
+| `conversations/<timestamp>.jsonl` | Every conversation turn — role, content, model, timestamp |
+| `soul_changes.log` | Each soul file patch — before/after diff |
+| `context_trim.log` | Messages dropped when the context window is trimmed |
+| `memory.log` | RAG queries + similarity scores, session summary writes (Phase 2+) |
+
+The Streamlit sidebar (`src/app.py`) includes a tabbed log viewer for all four files. For the CLI, open any log directly in a text editor or tail it:
+
+```bash
+Get-Content data\logs\soul_changes.log -Wait   # PowerShell live tail
+```
 
 ### Run the test suite
 

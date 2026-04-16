@@ -124,6 +124,63 @@ This is distinct from Phase 2 (episodic RAG memory):
 
 ---
 
+## Phase 1.8 — Logging & Observability
+
+**Goal**: A unified logging layer that makes every significant runtime event reviewable after the fact — soul file changes, what was trimmed from the context window, what the LLM was actually sent, and (in Phase 2) what long-term memories were retrieved or written.
+
+### 1.8.1 — Central Logging Setup (`src/utils/log.py`)
+
+- [ ] Create `src/utils/__init__.py` and `src/utils/log.py`
+- [ ] Implement `get_logger(name: str) -> logging.Logger` — returns a logger that writes to `data/logs/<name>.log` (rotating, max 5 MB × 3 backups) and WARNING+ to console
+- [ ] All existing ad-hoc loggers in `soul.py` (`soul_worker`, `curiosity_worker`) migrated to use `get_logger()`
+- [ ] Ensure `data/logs/` is added to `.gitignore` (alongside existing `data/` rule — confirm coverage)
+
+### 1.8.2 — Conversation Turn Log
+
+- [ ] On each completed turn (user message + assistant response), append a JSON object to `data/logs/conversations/<YYYY-MM-DD_HH-MM-SS>.jsonl`:
+  ```json
+  {"ts": "2026-04-16T14:32:01", "role": "user", "content": "...", "model": "phi4-mini"}
+  {"ts": "2026-04-16T14:32:04", "role": "assistant", "content": "...", "model": "phi4-mini"}
+  ```
+- [ ] A new `.jsonl` file is created per session (keyed by session start time) so sessions are naturally separated
+- [ ] Implement in both `src/main.py` (CLI) and `src/app.py` (Streamlit) using a shared `ConversationLogger` class in `src/utils/log.py`
+
+### 1.8.3 — Soul File Audit Log
+
+- [ ] Replace the unstructured `soul_worker.log` with a richer `data/logs/soul_changes.log`
+- [ ] Each patch entry records: timestamp, the patch dict that was applied, and a before/after snapshot of the changed keys (not the full file — just the modified paths)
+- [ ] Each "no patch" event is recorded as a single INFO line (timestamp + "no new facts")
+- [ ] Migrate all existing `_log.info` / `_log.debug` calls in `_patch_worker` and `_curiosity_worker` to the new logger
+
+### 1.8.4 — Short-Term Memory (Context Trim) Log
+
+- [ ] In `trim_history()` (`src/llm/client.py`), log to `data/logs/context_trim.log` whenever messages are dropped:
+  - Number of messages before and after trim
+  - Content of each dropped message (role + first 120 chars of content)
+  - Total character count before and after
+- [ ] Only log when messages are actually dropped (no-op trims are silent)
+
+### 1.8.5 — Long-Term Memory Log (stub — filled in Phase 2)
+
+- [ ] Create `data/logs/memory.log` via `get_logger("memory")` now; leave it empty until Phase 2
+- [ ] Phase 2 will add: every ChromaDB query (query text, top-K results, similarity scores, whether threshold was cleared), and every session summary write (timestamp, summary text, ChromaDB document ID)
+
+### 1.8.6 — Streamlit Log Viewer
+
+- [ ] Replace the existing single "Worker log" expander with a tabbed `st.tabs` panel covering all four log files: **Conversations**, **Soul changes**, **Context trim**, **Memory**
+- [ ] Each tab shows the last 50 lines of the corresponding log file with a "Clear" button
+- [ ] If a log file does not exist yet (e.g. Memory before Phase 2), show a `st.caption("No log yet")` placeholder
+
+### 1.8.7 — Test Coverage (`tests/test_logging.py`)
+
+- [ ] Test `ConversationLogger`: verify a `.jsonl` file is created in `tmp_path`, that each appended turn is valid JSON, and that role/content/ts fields are present
+- [ ] Test soul audit log: call `apply_patch()` on a `SoulFile` backed by `tmp_path` and verify the audit log contains the expected patch entry
+- [ ] Test context trim log: call `trim_history()` with a history that exceeds the limit and verify the trim log records the dropped messages
+- [ ] All tests use `tmp_path` fixtures and mock loggers pointed at temp directories — no production log files touched
+- [ ] Add a `conftest.py` fixture `log_dir(tmp_path)` that patches the `data/logs/` path globally for the test session
+
+---
+
 ## Phase 2 — Persistent Memory (RAG)
 
 **Goal**: The LLM remembers information from previous conversations by retrieving relevant past interactions before each response.
