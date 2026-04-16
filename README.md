@@ -104,18 +104,20 @@ Give the LLM a persistent, human-readable YAML file that defines its identity an
 - **Module**: `src/memory/soul.py` — `SoulFile` class with `load()`, `to_prompt_section()`, `update()`, and `apply_patch()`
 - **Self-updating**: after every N turns, the LLM is asked whether it learned anything worth keeping; if it outputs a JSON patch block, it is automatically written back to the soul file
 - **Injection**: the soul file is loaded on startup and injected into the system prompt as a `## About Me` section, so the LLM always has its identity and known facts in context
+- **Scope — identity layer only**: the soul file is the *always-on* layer injected into every prompt. It should stay compact and contain only stable, perpetually-relevant facts (Orion's identity, Daniel's core profile). Episodic knowledge — what was discussed in past sessions, situational preferences, one-off facts — belongs in Phase 2 RAG, not in the soul file's `facts` section.
 - **Distinct from RAG**: the soul file is structured and hand-editable; Phase 2 RAG handles unstructured episodic search over conversation history
 
 ### Phase 2 — Persistent Memory (RAG)
 
-Give the robot long-term memory that persists across conversations and updates itself with new information after each session.
+Give the robot long-term episodic memory that persists across conversations. This is the *selective* long-term memory layer — Orion only draws on it when the current conversation makes it relevant. The in-conversation rolling message list already serves as short-term memory; this phase adds cross-session retrieval on top.
 
 - **Vector Database**: [ChromaDB](https://github.com/chroma-core/chroma) — lightweight, embedded, fully local, persists to disk
 - **Embeddings**: [sentence-transformers](https://www.sbert.net/) with `all-MiniLM-L6-v2` — fast, small (22MB), runs on CPU
 - **Memory Flow**:
-  1. At conversation start: embed the user's message and retrieve the top-K most relevant past memories
-  2. Inject retrieved memories into the LLM's system prompt as context
-  3. At conversation end: embed and store a summary of the conversation to the vector store
+  1. On each user message: embed the message and query the vector store for the top-K most similar past session summaries
+  2. Apply a minimum cosine similarity threshold (e.g. ≥ 0.35) — if no result clears the threshold, skip injection entirely; Orion does not reach into long-term memory unless it is genuinely relevant
+  3. Inject qualifying memories into the LLM context under a `## Relevant Memory` section
+  4. At conversation end (graceful exit): use the LLM to summarise the session and save the summary to the vector store
 - **Conversation Summarisation**: Use the LLM itself to summarise each session before saving
 
 ### Phase 3 — Voice Input (Speech-to-Text)

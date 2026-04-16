@@ -120,6 +120,7 @@ This is distinct from Phase 2 (episodic RAG memory):
 - [x] `src/app.py` — same soul injection per message, soul section appended to the user-editable system prompt; `message_count` tracked in `st.session_state`
 - [x] Added a "🔮 Soul file" expander in the Streamlit sidebar showing live YAML contents (read-only view, re-reads file on each render to reflect background updates)
 - [x] Write `tests/test_soul.py` — 21/21 passed (load, save, update, apply_patch, to_prompt_section, as_yaml_string, _extract_json_patch)
+- [x] **Soul file scope**: the soul file is the *always-on identity layer* — it should stay compact and contain only stable, perpetually-relevant facts (Orion's identity and Daniel's core profile). Episodic facts learned from individual conversations belong in Phase 2 RAG, not accumulated in the soul file's `facts` section.
 
 ---
 
@@ -132,7 +133,7 @@ This is distinct from Phase 2 (episodic RAG memory):
 - [ ] Add `chromadb` and `sentence-transformers` to `requirements.txt`
 - [ ] Create a `MemoryStore` class that wraps ChromaDB with persistence to `data/memory/`
 - [ ] Implement `add_memory(text: str, metadata: dict)` — embeds text and stores it
-- [ ] Implement `query_memory(text: str, n_results: int = 5) -> list[str]` — retrieves top-K relevant memories
+- [ ] Implement `query_memory(text: str, n_results: int = 5, threshold: float = 0.35) -> list[str]` — retrieves top-K memories whose cosine similarity meets the threshold; returns an empty list when nothing is relevant enough (so no `## Relevant Memory` block is injected)
 - [ ] Implement `clear_memory()` for development/testing
 
 ### 2.2 — Embeddings (`src/memory/embeddings.py`)
@@ -149,8 +150,8 @@ This is distinct from Phase 2 (episodic RAG memory):
 
 ### 2.4 — Integrate Memory into Conversation Loop
 
-- [ ] On each user message: query `MemoryStore` for top-5 relevant past memories
-- [ ] Inject retrieved memories into the system prompt as a `## Relevant Memory` section
+- [ ] On each user message: embed the message and query `MemoryStore` for top-5 relevant past session summaries
+- [ ] Only inject the `## Relevant Memory` block when at least one result clears the similarity threshold — skip entirely if nothing is relevant; Orion should not reach into long-term memory unless necessary
 - [ ] On conversation end (graceful exit): call `summarise_session()` and save the summary to `MemoryStore`
 - [ ] Write `tests/test_memory.py` to confirm persistence across two separate Python runs
 
