@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.llm.client import OllamaClient, trim_history, OLLAMA_BASE_URL, DEFAULT_MODEL
 from src.llm.prompts import BASE_SYSTEM_PROMPT
-from src.memory.soul import SoulFile, maybe_update_soul, maybe_grow_curiosity, SOUL_UPDATE_EVERY, SOUL_CURIOSITY_EVERY
+from src.memory.soul import SoulFile, maybe_update_soul, maybe_grow_curiosity, SOUL_UPDATE_EVERY, SOUL_CURIOSITY_EVERY, SOUL_LOG_PATH
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -159,6 +159,39 @@ with st.sidebar:
         soul_view = SoulFile()
         st.code(soul_view.as_yaml_string(), language="yaml")
         st.caption("Updated automatically during conversation. You can also edit `data/soul.yaml` directly.")
+
+    # --- Manual soul update trigger ---
+    if st.button("⚡ Force soul update now", use_container_width=True):
+        soul_force = SoulFile()
+        if st.session_state.conversation:
+            maybe_update_soul(
+                soul_force,
+                st.session_state.conversation,
+                st.session_state.selected_model,
+                OLLAMA_BASE_URL,
+            )
+            maybe_grow_curiosity(
+                soul_force,
+                st.session_state.conversation,
+                st.session_state.selected_model,
+                OLLAMA_BASE_URL,
+            )
+            st.toast("⚡ Soul update triggered — check the log in a few seconds", icon="⚡")
+        else:
+            st.warning("No conversation to analyse yet.")
+
+    st.divider()
+
+    # --- Worker log viewer ---
+    with st.expander("📋 Worker log", expanded=False):
+        if SOUL_LOG_PATH.exists():
+            lines = SOUL_LOG_PATH.read_text(encoding="utf-8").splitlines()
+            st.code("\n".join(lines[-30:]) if lines else "(empty)", language="text")
+            if st.button("Clear log", key="clear_log"):
+                SOUL_LOG_PATH.write_text("", encoding="utf-8")
+                st.rerun()
+        else:
+            st.caption("No log yet — workers haven't fired.")
 
     st.caption(f"Model: `{st.session_state.selected_model}`")
     st.caption(f"History: {len(st.session_state.conversation)} messages")

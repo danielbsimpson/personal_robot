@@ -10,6 +10,7 @@ with a JSON patch block the patch is applied to the soul file automatically.
 """
 
 import json
+import logging
 import re
 import threading
 from pathlib import Path
@@ -33,6 +34,23 @@ SOUL_CURIOSITY_EVERY = 6
 
 # Module-level lock prevents concurrent writes from multiple threads
 _write_lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Worker logging — writes to data/soul_worker.log
+# ---------------------------------------------------------------------------
+
+SOUL_LOG_PATH = _PROJECT_ROOT / "data" / "soul_worker.log"
+
+_log = logging.getLogger("soul_worker")
+if not _log.handlers:
+    _log.setLevel(logging.DEBUG)
+    try:
+        SOUL_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _fh = logging.FileHandler(SOUL_LOG_PATH, encoding="utf-8")
+        _fh.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-8s  %(message)s"))
+        _log.addHandler(_fh)
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +154,7 @@ def _patch_worker(
     base_url: str,
 ) -> None:
     """Run in a daemon thread: ask the LLM for a soul patch and apply it if found."""
+    _log.info("patch_worker start — model=%s, msgs=%d", model, len(conversation_snapshot))
     try:
         # Lazy imports prevent circular dependency issues at module load time
         from src.llm.client import OllamaClient
@@ -159,13 +178,16 @@ def _patch_worker(
             stream=False,
         )
 
+        _log.debug("patch_worker raw response (first 500): %s", raw[:500])
         patch = _extract_json_patch(raw)
         if patch:
+            _log.info("patch_worker applying patch: %s", patch)
             soul.apply_patch(patch)
+        else:
+            _log.info("patch_worker: no patch — LLM found nothing new to record")
 
-    except Exception:
-        # Soul updates are best-effort — never propagate to the calling thread
-        pass
+    except Exception as exc:
+        _log.error("patch_worker error: %s", exc, exc_info=True)
 
 
 def maybe_update_soul(
@@ -206,6 +228,7 @@ def _curiosity_worker(
     base_url: str,
 ) -> None:
     """Run in a daemon thread: generate curiosity questions and append to soul."""
+    _log.info("curiosity_worker start — model=%s, msgs=%d", model, len(conversation_snapshot))
     try:
         from src.llm.client import OllamaClient
         from src.llm.prompts import CURIOSITY_PROMPT
@@ -226,10 +249,13 @@ def _curiosity_worker(
             stream=False,
         )
 
+        _log.debug("curiosity_worker raw response (first 500): %s", raw[:500])
         new_questions = _extract_question_list(raw)
         if not new_questions:
+            _log.info("curiosity_worker: no questions found in response")
             return
 
+        _log.info("curiosity_worker adding %d question(s): %s", len(new_questions), new_questions)
         # Merge into existing queue, skipping exact duplicates
         data = soul.load()
         identity = data.get("identity") or {}
@@ -239,8 +265,8 @@ def _curiosity_worker(
         merged = existing + [q for q in new_questions if q not in existing]
         soul.update("identity", "curiosity_queue", merged)
 
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.error("curiosity_worker error: %s", exc, exc_info=True)
 
 
 def maybe_grow_curiosity(

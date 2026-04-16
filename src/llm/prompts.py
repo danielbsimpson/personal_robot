@@ -36,7 +36,8 @@ Rules:
 - Do not repeat or paraphrase facts already present
 - Keep each value to one concise phrase
 - If the user explicitly asked you not to remember something, skip it
-- Valid top-level keys are: identity, user, partner, friends, environment, facts
+- Valid top-level keys are: identity, user, partner, environment, facts
+- Do NOT patch the `friends` key — it is a list and cannot be safely merged
 - Under `identity`, you may only update `personality_notes` — e.g. things you (Orion) observed, found interesting, or formed an opinion about. Do NOT touch `curiosity_queue` here.
 
 If you found new facts or observations, output ONLY a JSON block inside triple backticks, shaped like:
