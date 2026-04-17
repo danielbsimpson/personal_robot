@@ -481,3 +481,82 @@ See [raspberry_pi/README.md](raspberry_pi/README.md) for a dedicated setup guide
 ## Licence
 
 MIT — see [LICENSE](LICENSE) for details.
+
+---
+
+## Exploratory Research & Design
+
+### Thinking Fast and Slow
+
+“Thinking, Fast and Slow” by Daniel Kahneman maps human cognition onto two systems, and they translate surprisingly well into LLM memory architecture.
+
+#### The Core Mapping
+
+**System 1 → Fast, implicit, low-cost inference**  
+Kahneman’s System 1 is automatic, associative, and effortless. In LLM terms, this maps to:
+
+- The base model’s parametric memory — knowledge baked into weights during training
+- Embedding-based retrieval (semantic search over a vector store) — fast, fuzzy, pattern-matching recall
+- KV cache reuse within a context window — instant, zero-compute recall of recent tokens
+
+**System 2 → Slow, deliberate, high-cost reasoning**  
+System 2 is effortful, rule-based, and sequential. In LLM terms:
+
+- Chain-of-thought / scratchpad reasoning — the model “thinking step by step”
+- Tool-augmented retrieval — deliberately querying structured knowledge bases, APIs, or long-term stores
+- Agentic loops — multi-step planning where the model reflects, verifies, and revises
+
+#### Key Insights from the Book and Their Architectural Implications
+
+1. **Cognitive ease drives System 1 dominance**  
+   Kahneman shows that familiar, fluent inputs trigger System 1 by default. For LLMs, this suggests a router/gating mechanism: route common, well-formed queries to fast parametric or cached retrieval, and only escalate to expensive retrieval or CoT when novelty or ambiguity is detected. This is essentially what systems like Mixtral’s MoE or speculative decoding approximate at the compute level.
+2. **Availability heuristic → Recency bias in memory**  
+   System 1 over-weights recent, vivid memories. An honest LLM memory system should model this explicitly — giving recency-weighted scores in retrieval, but also building in a System 2 correction pass that asks “is this the most relevant memory, or just the most recent one?”
+3. **Anchoring → Prompt/context poisoning**  
+   Early information in a context window disproportionately anchors later reasoning, just as anchoring biases System 1. Architecturally, this argues for position-agnostic retrieval (don’t just stuff retrieved memory at the top of the prompt) and explicit conflict-detection when retrieved facts contradict the anchor.
+4. **What You See Is All There Is (WYSIATI)**  
+   This is Kahneman’s most important insight for AI: System 1 builds a coherent narrative from only the information present, without flagging what’s missing. LLMs do this acutely. The architectural remedy is a memory completeness check — a System 2 step that asks “what information would I need but don’t have?” before committing to an answer. This is the spirit behind techniques like self-RAG and uncertainty-aware generation.
+5. **Dual-process for memory consolidation**  
+   Kahneman describes sleep and reflection as when System 2 reviews and consolidates System 1 experiences. You can mirror this with an asynchronous consolidation loop — a background process that periodically summarizes, deduplicates, and re-indexes episodic memory into a more compressed semantic store. This is exactly what systems like MemGPT attempt.
+
+#### A Rough Architecture Sketch
+
+```text
+Incoming query
+      │
+      ▼
+ ┌─────────────────────────────────┐
+ │  SYSTEM 1 LAYER (fast path)     │
+ │  • KV cache (in-context)        │
+ │  • Vector similarity retrieval  │
+ │  • Parametric weights           │
+ │  Confidence score emitted ──────┼──► High confidence → respond
+ └─────────────────────────────────┘
+             │ Low confidence / novelty detected
+             ▼
+ ┌─────────────────────────────────┐
+ │  SYSTEM 2 LAYER (slow path)     │
+ │  • Structured KB / SQL queries  │
+ │  • CoT / scratchpad reasoning   │
+ │  • Conflict detection           │
+ │  • WYSIATI completeness check   │
+ └─────────────────────────────────┘
+             │
+             ▼
+      Final response
+             │
+    (Async, background)
+             ▼
+ ┌─────────────────────────────────┐
+ │  CONSOLIDATION (sleep loop)     │
+ │  • Summarize episodic buffer    │
+ │  • Merge into semantic store    │
+ │  • Prune redundant memories     │
+ └─────────────────────────────────┘
+```
+
+#### Where This Gets Hard
+
+- The gating problem: Deciding when to escalate from System 1 to System 2 is itself a hard inference problem. Getting this wrong is costly either way (too slow, or confidently wrong).
+- Metacognition is weak in LLMs: System 2 in humans involves genuine awareness of System 1’s errors. LLMs lack reliable introspection about their own confidence, making the handoff noisy.
+- Bias doesn’t disappear: Kahneman’s point is that System 2 is lazy — it often just endorses System 1’s output. LLMs exhibit exactly this; CoT doesn’t always catch parametric errors, it sometimes just rationalizes them.
