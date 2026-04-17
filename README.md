@@ -98,7 +98,7 @@ A local web app for testing multi-turn conversations without the CLI.
 - **Performance**: Ollama availability and model list are cached (`ttl=10s` / `ttl=30s`) to avoid redundant HTTP calls on re-renders
 - **Verified**: model switching mid-session (`phi4-mini` ↔ `llama3.2:3b`) works without error
 
-### Phase 1.7 — Soul File (Identity & Long-Term Facts)
+### ✅ Phase 1.7 — Soul File (Identity & Long-Term Facts) *(complete)*
 
 Give the LLM a persistent, human-readable YAML file that defines its identity and stores facts it learns over time.
 
@@ -109,7 +109,7 @@ Give the LLM a persistent, human-readable YAML file that defines its identity an
 - **Scope — identity layer only**: the soul file is the *always-on* layer injected into every prompt. It should stay compact and contain only stable, perpetually-relevant facts (Orion's identity, Daniel's core profile). Episodic knowledge — what was discussed in past sessions, situational preferences, one-off facts — belongs in Phase 2 RAG, not in the soul file's `facts` section.
 - **Distinct from RAG**: the soul file is structured and hand-editable; Phase 2 RAG handles unstructured episodic search over conversation history
 
-### Phase 1.8 — Logging & Observability
+### ✅ Phase 1.8 — Logging & Observability *(complete)*
 
 A unified logging layer that writes structured, human-readable records for every significant event — so changes to the soul file, the in-context conversation window, and the long-term memory store can all be reviewed after the fact.
 
@@ -117,11 +117,11 @@ A unified logging layer that writes structured, human-readable records for every
 - **Conversation log** (`data/logs/conversations/`): every turn is appended to a per-session `.jsonl` file — one JSON object per line containing timestamp, role, content, and active model. Lets you replay any past session exactly as it happened.
 - **Soul file audit log** (`data/logs/soul_changes.log`): whenever a patch is applied, the full before/after diff is recorded. Replaces the existing unstructured `soul_worker.log` with a richer, diff-based format.
 - **Short-term memory log** (`data/logs/context_trim.log`): each time the rolling conversation history is trimmed, log the messages that were dropped and the new history length. Makes context window behaviour visible.
-- **Long-term memory log** (`data/logs/memory.log`): for Phase 2 — log every ChromaDB query (top-K results + similarity scores) and every session summary write. Entries record whether the relevance threshold was cleared and what was injected.
+- **Long-term memory log** (`data/logs/memory.log`): logs every ChromaDB query (top-K results + similarity scores) and every session summary write. Entries record whether the relevance threshold was cleared and what was injected.
 - **Streamlit log viewer**: the existing "Worker log" sidebar expander is replaced with a tabbed viewer covering all four log files, with per-log clear buttons.
-- **Test coverage**: `tests/test_logging.py` verifies that conversation, soul, trim, and memory log files are created and populated correctly using `tmp_path` fixtures; no live LLM required.
+- **Test coverage**: `tests/test_logging.py` — 12/12 passing; verifies conversation, soul, trim, and memory log files are created and populated correctly using `tmp_path` fixtures; no live LLM required.
 
-### Phase 1.9 — Context Budget Management
+### ✅ Phase 1.9 — Context Budget Management *(complete)*
 
 A budget-aware context assembly layer that measures every section before sending it to the LLM, ensures the model always has headroom to reply, and gracefully degrades the least-important sections rather than silently overflowing.
 
@@ -156,19 +156,31 @@ When a tier is over-budget, sections are cut in this order (highest priority sur
 - **Soul trimmer** (`src/memory/soul.py`) — `to_prompt_section(budget_chars: int)` gains an optional budget parameter; if the full YAML exceeds the budget it progressively drops `facts` → `environment` → extended `user` fields until it fits
 - **Logging** — whenever any section is trimmed, an entry is appended to `data/logs/context_trim.log` (built in Phase 1.8) recording which sections were cut, by how many tokens, and the final assembled size
 - **Streamlit indicator** — if any trimming occurred on the last message, a subtle `⚠ context trimmed` badge appears next to the message count in the sidebar; clicking it opens the Context trim log tab
+- **Tests**: `tests/test_context.py` — 10/10 passing
 
-### Phase 2 — Persistent Memory (RAG)
+### ✅ Phase 1.95 — Memory Strategy & Intelligence *(complete)*
 
-Give the robot long-term episodic memory that persists across conversations. This is the *selective* long-term memory layer — Orion only draws on it when the current conversation makes it relevant. The in-conversation rolling message list already serves as short-term memory; this phase adds cross-session retrieval on top.
+Decision logic governing *what* gets stored in short-term vs. long-term memory, so all later phases follow consistent rules.
 
-- **Vector Database**: [ChromaDB](https://github.com/chroma-core/chroma) — lightweight, embedded, fully local, persists to disk
-- **Embeddings**: [sentence-transformers](https://www.sbert.net/) with `all-MiniLM-L6-v2` — fast, small (22MB), runs on CPU
-- **Memory Flow**:
-  1. On each user message: embed the message and query the vector store for the top-K most similar past session summaries
-  2. Apply a minimum cosine similarity threshold (e.g. ≥ 0.35) — if no result clears the threshold, skip injection entirely; Orion does not reach into long-term memory unless it is genuinely relevant
-  3. Inject qualifying memories into the LLM context under a `## Relevant Memory` section
-  4. At conversation end (graceful exit): use the LLM to summarise the session and save the summary to the vector store
-- **Conversation Summarisation**: Use the LLM itself to summarise each session before saving
+- **Short-term memory policy** (`src/memory/policy.py`): `is_filler_message()` pre-filter excludes low-value turns (≤10 chars or exact filler phrases) from the history buffer; `compress_history()` in `src/llm/client.py` summarises oldest turn-pairs into a `[Earlier context summary]` entry on overflow rather than discarding them
+- **Long-term memory policy** (`src/memory/policy.py`): `should_store()` gate enforces novelty, stability, category whitelist (`LONG_TERM_CATEGORIES`), and confidence threshold (`CONFIDENCE_THRESHOLD = 0.8`); `_is_transient()` keyword-pattern check rejects ephemeral facts (weather, current location, etc.)
+- **Soul patch confidence**: `SOUL_PATCH_PROMPT` requires `_confidence` and `_explicit` metadata; `_patch_worker` strips them before `apply_patch()` and skips low-confidence non-explicit patches
+- **Two-pass extraction** (`src/memory/extractor.py`): `maybe_extract_memories()` fires every 5 turns as a daemon thread — sends `MEMORY_EXTRACT_PROMPT` to extract `{fact, category, confidence, explicit}` candidates, runs each through `should_store()`, and logs all decisions to `data/logs/memory.log`
+- **Curiosity system**: `maybe_grow_curiosity()` periodically asks the LLM to add questions to a `curiosity_queue` in the soul file; Orion asks them naturally when the moment fits
+- **Tests**: `tests/test_memory_policy.py` — 25/25 passing
+
+### ✅ Phase 2 — Persistent Memory (RAG) *(complete)*
+
+Orion has long-term episodic memory that persists across conversations. On each user message the relevant memory is retrieved and injected into context; sessions are summarised and stored when a conversation ends.
+
+- **Vector Database**: [ChromaDB](https://github.com/chroma-core/chroma) — lightweight, embedded, fully local, persists to `data/memory/`
+- **Embeddings**: [sentence-transformers](https://www.sbert.net/) `all-MiniLM-L6-v2` — 384-dim, CPU-only, 22 MB, module-level cache so multiple instances share one load
+- **`src/memory/vector_store.py`** — `MemoryStore` with `add_memory()` (SHA-256 ID, idempotent upsert), `query_memory()` (cosine similarity threshold ≥ 0.35, returns `[]` when nothing qualifies), `clear_memory()`, `count()`; every call logged to `memory.log`
+- **`src/memory/embeddings.py`** — `Embedder` class wrapping sentence-transformers; `embed()` and `embed_batch()` with empty-string validation
+- **`src/memory/summariser.py`** — `summarise_session()` feeds the full conversation to the LLM with `SUMMARISE_SESSION_PROMPT`; returns `""` when fewer than 2 user turns or when the LLM produces only whitespace
+- **RAG injection** (`src/app.py`, `src/main.py`): on each non-filler user message, query the store → if results clear the threshold, build a `## Relevant Memory` block capped at `ContextBudget.rag_budget_chars()` and append to the system prompt; skip entirely when nothing is relevant
+- **Session save**: `app.py` saves a summary when "🗑️ Clear conversation" is clicked; `main.py` saves in a `try/finally` so both clean `quit` and Ctrl-C are covered
+- **Tests**: `tests/test_memory.py` 14/14 + `tests/test_embeddings.py` 15/15 + `tests/test_summariser.py` 19/19 + `tests/test_rag_integration.py` 17/17 = **65 tests passing**
 
 ### Phase 3 — Voice Input (Speech-to-Text)
 
@@ -349,8 +361,11 @@ personal_robot/
 │   │   └── log.py            # Central logging factory (get_logger)
 │   ├── memory/
 │   │   ├── __init__.py
-│   │   ├── vector_store.py   # ChromaDB read/write
-│   │   ├── embeddings.py     # sentence-transformers wrapper
+│   │   ├── soul.py           # SoulFile — identity YAML, LLM-driven self-update
+│   │   ├── policy.py         # Memory policy — should_store(), filler filter
+│   │   ├── extractor.py      # Two-pass memory extraction daemon
+│   │   ├── vector_store.py   # ChromaDB read/write with memory.log logging
+│   │   ├── embeddings.py     # sentence-transformers Embedder wrapper
 │   │   └── summariser.py     # LLM-powered session summariser
 │   ├── audio/
 │   │   ├── __init__.py
@@ -385,8 +400,12 @@ personal_robot/
     ├── test_context.py
     ├── test_logging.py
     ├── test_memory.py
-    ├── test_audio.py
-    └── test_vision.py
+    ├── test_memory_policy.py
+    ├── test_embeddings.py
+    ├── test_summariser.py
+    ├── test_rag_integration.py
+    ├── test_audio.py           # Phase 3 (not yet implemented)
+    └── test_vision.py          # Phase 5 (not yet implemented)
 ```
 
 ---
