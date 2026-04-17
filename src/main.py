@@ -12,6 +12,7 @@ Commands during conversation:
 import sys
 
 from src.llm.client import OllamaClient, trim_history, OLLAMA_BASE_URL
+from src.llm.context import ContextBudget
 from src.llm.prompts import BASE_SYSTEM_PROMPT, get_time_section
 from src.memory.soul import SoulFile, maybe_update_soul, maybe_grow_curiosity, SOUL_UPDATE_EVERY, SOUL_CURIOSITY_EVERY
 from src.utils.log import ConversationLogger
@@ -21,9 +22,7 @@ from src.utils.log import ConversationLogger
 # ---------------------------------------------------------------------------
 
 MODEL = "phi4-mini"
-# Drop oldest history pairs when total content exceeds this many characters
-# (~4,096 tokens × ~4 chars/token)
-CONTEXT_LIMIT_CHARS = 4096 * 4
+BUDGET = ContextBudget()  # defaults: 4096 tokens, 512 reserve
 
 
 # ---------------------------------------------------------------------------
@@ -56,11 +55,13 @@ def main() -> None:
 
     # Load soul file and inject into system prompt
     soul = SoulFile()
-    soul_section = soul.to_prompt_section()
+    soul_section = soul.to_prompt_section(budget_chars=BUDGET.soul_budget_chars())
     system_prompt = BASE_SYSTEM_PROMPT
     if soul_section:
         system_prompt = f"{BASE_SYSTEM_PROMPT}\n\n{soul_section}"
-    system_prompt = f"{system_prompt}\n\n{get_time_section()}"
+    time_section = get_time_section()
+    if time_section:
+        system_prompt = f"{system_prompt}\n\n{time_section}"
 
     client = OllamaClient(
         model=MODEL,
@@ -93,7 +94,10 @@ def main() -> None:
         conv_logger.log_turn("user", user_text)
 
         # Trim history to stay within context budget
-        conversation = trim_history(conversation, limit_chars=CONTEXT_LIMIT_CHARS)
+        conversation = trim_history(
+            conversation,
+            budget_chars=BUDGET.history_budget_chars(),
+        )
 
         # Get response (streaming — tokens print as they arrive)
         print("Robot: ", end="", flush=True)

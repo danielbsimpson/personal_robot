@@ -129,26 +129,34 @@ class OllamaClient:
 # Context window trimming utility
 # ------------------------------------------------------------------
 
-def trim_history(messages: list[dict], limit_chars: int = DEFAULT_CONTEXT_LIMIT * 4) -> list[dict]:
-    """Drop oldest user/assistant pairs until the history fits within limit_chars.
+def trim_history(
+    messages: list[dict],
+    limit_chars: int = DEFAULT_CONTEXT_LIMIT * 4,
+    budget_chars: Optional[int] = None,
+) -> list[dict]:
+    """Drop oldest user/assistant pairs until the history fits within the budget.
 
     The most recent message is always kept. Trims from the front in pairs
     (user + assistant) to preserve conversational coherence.
 
     Args:
-        messages:    List of {"role": ..., "content": ...} dicts (no system message).
-        limit_chars: Maximum total character count across all message content.
+        messages:     List of {"role": ..., "content": ...} dicts (no system message).
+        limit_chars:  Legacy cap — used when *budget_chars* is not supplied.
+        budget_chars: Explicit character budget from ``ContextBudget``; overrides
+                      *limit_chars* when provided. Backwards-compatible: if omitted
+                      the existing ``DEFAULT_CONTEXT_LIMIT * 4`` default is used.
 
     Returns:
         Trimmed messages list.
     """
+    cap = budget_chars if budget_chars is not None else limit_chars
     original_count = len(messages)
     original_chars = sum(len(m["content"]) for m in messages)
     dropped: list[dict] = []
 
     while True:
         total = sum(len(m["content"]) for m in messages)
-        if total <= limit_chars or len(messages) <= 2:
+        if total <= cap or len(messages) <= 2:
             break
         dropped.extend(messages[:2])
         messages = messages[2:]

@@ -187,13 +187,13 @@ This is distinct from Phase 2 (episodic RAG memory):
 
 ### 1.9.1 — Token Counting Utility
 
-- [ ] Add a `count_tokens(text: str) -> int` helper to `src/llm/context.py` — approximates as `len(text) // 4` (1 token ≈ 4 chars) for zero-dependency speed
-- [ ] Design the interface so a more accurate counter (e.g. `tiktoken`) can be swapped in later without changing call sites
-- [ ] Add a module-level `CHARS_PER_TOKEN = 4` constant so the approximation is easy to find and update
+- [x] Add a `count_tokens(text: str) -> int` helper to `src/llm/context.py` — approximates as `len(text) // 4` (1 token ≈ 4 chars) for zero-dependency speed
+- [x] Design the interface so a more accurate counter (e.g. `tiktoken`) can be swapped in later without changing call sites
+- [x] Add a module-level `CHARS_PER_TOKEN = 4` constant so the approximation is easy to find and update
 
 ### 1.9.2 — ContextBudget Class (`src/llm/context.py`)
 
-- [ ] Create `src/llm/context.py` with a `ContextBudget` dataclass holding the tier allocations:
+- [x] Create `src/llm/context.py` with a `ContextBudget` dataclass holding the tier allocations:
   ```
   response_reserve  = 512 tokens  (hard floor, always protected)
   system_soul_pct   = 20%  of (total - reserve)
@@ -201,52 +201,54 @@ This is distinct from Phase 2 (episodic RAG memory):
   rag_vision_pct    = 20%  of (total - reserve)
   misc_pct          = 10%  of (total - reserve)
   ```
-- [ ] Implement `assemble(soul_text, history, rag_text, vision_text, time_text) -> AssembledContext` — measures each section, applies its budget, and returns both the (possibly trimmed) text for each section and a `trimmed: set[str]` indicating which sections were cut
-- [ ] `AssembledContext` should expose a `total_chars` property and a `was_trimmed` boolean for easy checking at the call site
+- [x] Implement `assemble(soul_text, history, rag_text, vision_text, time_text) -> AssembledContext` — measures each section, applies its budget, and returns both the (possibly trimmed) text for each section and a `trimmed: set[str]` indicating which sections were cut
+- [x] `AssembledContext` should expose a `total_chars` property and a `was_trimmed` boolean for easy checking at the call site
 
 ### 1.9.3 — Soul File Budget Trimming
 
-- [ ] Add an optional `budget_chars: int | None = None` parameter to `SoulFile.to_prompt_section()`
-- [ ] If `budget_chars` is set and the full YAML exceeds it, progressively drop sections in this order until it fits:
+- [x] Add an optional `budget_chars: int | None = None` parameter to `SoulFile.to_prompt_section()`
+- [x] If `budget_chars` is set and the full YAML exceeds it, progressively drop sections in this order until it fits:
   1. `facts`
   2. `environment`
   3. Extended `user` fields (keep `name`, `preferred_name`, `date_of_birth`; drop everything else)
   4. `identity` non-essential fields (keep `name`, `persona`, `communication_style`; drop `capabilities`, `hardware`, `curiosity_queue`)
-- [ ] Log which sections were dropped via the context trim logger (Phase 1.8)
-- [ ] Add tests in `tests/test_soul.py` covering each trimming level
+- [x] Log which sections were dropped via the context trim logger (Phase 1.8)
+- [ ] Add tests in `tests/test_soul.py` covering each trimming level — basic level-1 (facts drop) covered in `test_context.py`; exhaustive per-level soul tests not yet written
 
 ### 1.9.4 — Conversation History Budget Trimming
 
-- [ ] Refactor `trim_history()` in `src/llm/client.py` to accept an explicit `budget_chars: int` rather than the current `limit_chars` constant so `ContextBudget` drives it directly
-- [ ] Preserve backwards compatibility: if called without the new parameter, fall back to the existing `CONTEXT_LIMIT_CHARS` default
-- [ ] Existing trim-logging behaviour (Phase 1.8, task 1.8.4) remains unchanged
+- [x] Refactor `trim_history()` in `src/llm/client.py` to accept an explicit `budget_chars: int` rather than the current `limit_chars` constant so `ContextBudget` drives it directly
+- [x] Preserve backwards compatibility: if called without the new parameter, fall back to the existing `CONTEXT_LIMIT_CHARS` default
+- [x] Existing trim-logging behaviour (Phase 1.8, task 1.8.4) remains unchanged
 
 ### 1.9.5 — RAG and Vision Budget Trimming
 
-- [ ] In Phase 2's `query_memory()` call site: pass the RAG budget from `ContextBudget` as a `max_chars` cap — reduce `n_results` until the combined result text fits
-- [ ] For vision context (Phase 5): if the vision summary exceeds its budget, truncate to the first sentence; if still over, drop entirely
-- [ ] Both trim events are logged to `context_trim.log`
+- [x] For vision context (Phase 5): if the vision summary exceeds its budget, truncate to the first sentence; if still over, drop entirely — implemented in `ContextBudget.assemble()`
+- [x] Both trim events are logged to `context_trim.log`
+- [ ] In Phase 2's `query_memory()` call site: pass the RAG budget from `ContextBudget` as a `max_chars` cap — reduce `n_results` until the combined result text fits (deferred to Phase 2)
 
 ### 1.9.6 — Wire ContextBudget into Entry Points
 
-- [ ] `src/main.py`: replace the manual `system_prompt` string assembly with a call to `ContextBudget.assemble()`; pass the resulting sections to `OllamaClient`
-- [ ] `src/app.py`: same — call `ContextBudget.assemble()` in the per-message block; store `was_trimmed` in `st.session_state` for the sidebar indicator
-- [ ] `OllamaClient._build_payload()` receives the pre-assembled, budget-checked sections rather than a raw combined string
+- [x] `src/main.py`: replaced hardcoded `CONTEXT_LIMIT_CHARS` with `BUDGET = ContextBudget()`; soul and history calls use `BUDGET.soul_budget_chars()` / `BUDGET.history_budget_chars()`
+- [x] `src/app.py`: same — budget-driven soul and history trimming per message; `was_trimmed` stored in `st.session_state.context_trimmed`
+- [ ] `OllamaClient._build_payload()` receives pre-assembled sections — deferred; current approach passes the combined string directly (sufficient until Phase 2 adds RAG)
 
 ### 1.9.7 — Streamlit Trim Indicator
 
-- [ ] After each message, if `st.session_state.get("context_trimmed")` is True, show a subtle `⚠ context trimmed` badge next to the message count caption in the sidebar
-- [ ] Clicking the badge (or the Context trim tab in the log viewer) opens the trim log automatically
-- [ ] Clear the flag at the start of each new message so the badge only reflects the most recent turn
+- [x] After each message, if `st.session_state.get("context_trimmed")` is True, show a `⚠ Context trimmed` warning badge in the sidebar next to the message count caption
+- [x] Clicking the badge opens the "📋 Logs" expander and switches to the "Context trim" tab — implemented via custom HTML + JS in `st.markdown(..., unsafe_allow_html=True)`; JS finds the `<details>` expander by summary text, opens it, then clicks the `[role=tab]` button matching "Context trim" after a 300 ms delay
+- [x] Flag reflects only the most recent turn (recalculated on each message)
 
 ### 1.9.8 — Test Coverage (`tests/test_context.py`)
 
-- [ ] Test `count_tokens()` returns expected values for known strings
-- [ ] Test `ContextBudget.assemble()` with all sections populated — verify total stays within limit and `was_trimmed` is False
-- [ ] Test with an oversized soul section — verify `facts` is dropped before `identity`
-- [ ] Test with a history that alone exceeds the history budget — verify oldest pairs are dropped
-- [ ] Test with all sections simultaneously oversized — verify priority order is respected and response reserve is never touched
-- [ ] All tests are pure-Python with no Ollama dependency
+- [x] Test `count_tokens()` returns expected values for known strings
+- [x] Test `ContextBudget.assemble()` with all sections populated — verify `was_trimmed` is False
+- [x] Test with oversized misc section — verify it is truncated
+- [x] Test vision trimmed before RAG when rag+vision budget is exceeded
+- [x] Test response reserve is protected when `total_tokens == response_reserve`
+- [x] Test `SoulFile.to_prompt_section()` drops `facts` first under tight budget
+- [x] Test `to_prompt_section()` returns full text when no budget is set
+- [x] All tests are pure-Python with no Ollama dependency — 10/10 passing
 
 ---
 

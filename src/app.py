@@ -20,6 +20,7 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.llm.client import OllamaClient, trim_history, OLLAMA_BASE_URL, DEFAULT_MODEL
+from src.llm.context import ContextBudget
 from src.llm.prompts import BASE_SYSTEM_PROMPT, get_time_section
 from src.memory.soul import SoulFile, maybe_update_soul, maybe_grow_curiosity, SOUL_UPDATE_EVERY, SOUL_CURIOSITY_EVERY
 from src.utils.log import ConversationLogger, get_logger, _DEFAULT_LOGS_DIR
@@ -29,7 +30,7 @@ from src.utils.log import ConversationLogger, get_logger, _DEFAULT_LOGS_DIR
 # ---------------------------------------------------------------------------
 
 PAGE_TITLE = "Personal Robot Chat"
-CONTEXT_LIMIT_CHARS = 4096 * 4
+BUDGET = ContextBudget()  # defaults: 4096 tokens, 512 reserve
 _LOGS_DIR = _DEFAULT_LOGS_DIR
 
 # Ensure the memory log stub exists so the tab is ready for Phase 2.
@@ -103,6 +104,9 @@ if "system_prompt" not in st.session_state:
 
 if "selected_model" not in st.session_state:
     st.session_state.selected_model: str = DEFAULT_MODEL
+
+if "context_trimmed" not in st.session_state:
+    st.session_state.context_trimmed: bool = False
 
 if "message_count" not in st.session_state:
     st.session_state.message_count: int = 0
@@ -250,6 +254,38 @@ with st.sidebar:
 
     st.caption(f"Model: `{st.session_state.selected_model}`")
     st.caption(f"History: {len(st.session_state.conversation)} messages")
+    if st.session_state.get("context_trimmed"):
+        st.markdown(
+            """
+            <a
+                href="javascript:void(0)"
+                onclick="(function(){
+                    var details = Array.from(document.querySelectorAll('details'));
+                    var logsDetails = details.find(function(d){
+                        var s = d.querySelector('summary');
+                        return s && s.innerText.indexOf('Logs') !== -1;
+                    });
+                    if (!logsDetails) return;
+                    if (!logsDetails.open) logsDetails.querySelector('summary').click();
+                    setTimeout(function(){
+                        var tabs = Array.from(document.querySelectorAll('[role=tab]'));
+                        var trimTab = tabs.find(function(t){
+                            return t.innerText.trim() === 'Context trim';
+                        });
+                        if (trimTab) {
+                            trimTab.click();
+                            trimTab.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                        }
+                    }, 300);
+                })()"
+                style="display:block;padding:8px 10px;margin:4px 0;background:#fff3cd;
+                       border:1px solid #ffc107;border-radius:6px;color:#856404;
+                       text-decoration:none;font-size:0.85rem;font-weight:500;
+                       cursor:pointer;"
+            >&#9888;&#65039; Context trimmed &mdash; click to view trim log</a>
+            """,
+            unsafe_allow_html=True,
+        )
 
 # ---------------------------------------------------------------------------
 # Main chat area
@@ -268,11 +304,13 @@ user_input = st.chat_input("Type a message…")
 if user_input:
     # Build the client — compose system prompt with soul section and current time appended
     soul = SoulFile()
-    soul_section = soul.to_prompt_section()
+    soul_section = soul.to_prompt_section(budget_chars=BUDGET.soul_budget_chars())
     combined_prompt = st.session_state.system_prompt
     if soul_section:
         combined_prompt = f"{st.session_state.system_prompt}\n\n{soul_section}"
-    combined_prompt = f"{combined_prompt}\n\n{get_time_section()}"
+    time_section = get_time_section()
+    if time_section:
+        combined_prompt = f"{combined_prompt}\n\n{time_section}"
 
     client = OllamaClient(
         model=st.session_state.selected_model,
@@ -291,8 +329,10 @@ if user_input:
 
     # Trim history to stay within context budget before sending
     trimmed = trim_history(
-        list(st.session_state.conversation), limit_chars=CONTEXT_LIMIT_CHARS
+        list(st.session_state.conversation),
+        budget_chars=BUDGET.history_budget_chars(),
     )
+    st.session_state.context_trimmed = len(trimmed) < len(st.session_state.conversation)
 
     # Stream the assistant response into a chat bubble
     with st.chat_message("assistant"):

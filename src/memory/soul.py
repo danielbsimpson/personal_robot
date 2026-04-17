@@ -84,15 +84,82 @@ class SoulFile:
                 )
             tmp.replace(self.path)
 
-    def to_prompt_section(self) -> str:
-        """Return a formatted ## About Me YAML block for system prompt injection."""
+    def to_prompt_section(self, budget_chars: Optional[int] = None) -> str:
+        """Return a formatted ## About Me YAML block for system prompt injection.
+
+        If *budget_chars* is set and the full YAML exceeds it, sections are
+        progressively dropped in this priority order (least important first):
+          1. ``facts``
+          2. ``environment``
+          3. Extended ``user`` fields — keeps only name, preferred_name,
+             date_of_birth, location; drops everything else
+          4. ``identity`` non-essentials — keeps name, persona,
+             communication_style; drops capabilities, hardware, curiosity_queue
+
+        Each drop level is tried in sequence until the text fits.
+        """
         data = self.load()
         if not data:
             return ""
-        soul_yaml = yaml.dump(
-            data, default_flow_style=False, allow_unicode=True, sort_keys=False
-        )
-        return f"## About Me\n\n```yaml\n{soul_yaml}```"
+
+        def _render(d: dict) -> str:
+            soul_yaml = yaml.dump(
+                d, default_flow_style=False, allow_unicode=True, sort_keys=False
+            )
+            return f"## About Me\n\n```yaml\n{soul_yaml}```"
+
+        text = _render(data)
+        if budget_chars is None or len(text) <= budget_chars:
+            return text
+
+        # --- Level 1: drop facts ---
+        trimmed = {k: v for k, v in data.items() if k != "facts"}
+        text = _render(trimmed)
+        if len(text) <= budget_chars:
+            _get_log().info("soul trimmed: dropped 'facts' section")
+            return text
+
+        # --- Level 2: drop environment ---
+        trimmed = {k: v for k, v in trimmed.items() if k != "environment"}
+        text = _render(trimmed)
+        if len(text) <= budget_chars:
+            _get_log().info("soul trimmed: dropped 'facts' and 'environment' sections")
+            return text
+
+        # --- Level 3: keep only core user fields ---
+        _USER_CORE = {"name", "preferred_name", "date_of_birth", "location"}
+        if "user" in trimmed and isinstance(trimmed["user"], dict):
+            trimmed["user"] = {
+                k: v for k, v in trimmed["user"].items() if k in _USER_CORE
+            }
+        text = _render(trimmed)
+        if len(text) <= budget_chars:
+            _get_log().info("soul trimmed: reduced user to core fields")
+            return text
+
+        # --- Level 4: keep only core identity fields ---
+        _IDENTITY_CORE = {"name", "persona", "communication_style"}
+        if "identity" in trimmed and isinstance(trimmed["identity"], dict):
+            trimmed["identity"] = {
+                k: v for k, v in trimmed["identity"].items() if k in _IDENTITY_CORE
+            }
+        text = _render(trimmed)
+        if len(text) <= budget_chars:
+            _get_log().info("soul trimmed: reduced identity to core fields")
+            return text
+
+        # --- Level 5: trim partner to core fields ---
+        _PARTNER_CORE = {"name", "preferred_name", "relationship"}
+        if "partner" in trimmed and isinstance(trimmed["partner"], dict):
+            trimmed["partner"] = {
+                k: v for k, v in trimmed["partner"].items() if k in _PARTNER_CORE
+            }
+        text = _render(trimmed)
+        if len(text) <= budget_chars:
+            _get_log().info("soul trimmed: reduced partner to core fields")
+        else:
+            _get_log().warning("soul still over budget after maximum trimming (%d chars)", len(text))
+        return text
 
     def update(self, section: str, key: str, value: object) -> None:
         """Set a single key within a section and save."""
