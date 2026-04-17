@@ -73,24 +73,35 @@ class MemoryStore:
         similarity_threshold: float = 0.35,
     ) -> None:
         self._persist_dir = Path(persist_dir) if persist_dir else DEFAULT_MEMORY_DIR
-        self._persist_dir.mkdir(parents=True, exist_ok=True)
+        self._embedding_model = embedding_model
         self._threshold = similarity_threshold
         self._lock = threading.Lock()
+        # Heavy resources are created on first use to keep app startup instant.
+        self._ef = None
+        self._client = None
+        self._collection = None
 
-        # Lazy imports keep startup fast when running in CLI / test mode
-        import chromadb
-        from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+    def _ensure_initialized(self) -> None:
+        """Initialize ChromaDB and the embedding function on first use."""
+        if self._collection is not None:
+            return
+        with self._lock:
+            if self._collection is not None:
+                return
+            self._persist_dir.mkdir(parents=True, exist_ok=True)
+            import chromadb
+            from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 
-        self._ef = SentenceTransformerEmbeddingFunction(
-            model_name=embedding_model,
-            device="cpu",  # CPU keeps inference stable; GPU reserved for Ollama
-        )
-        self._client = chromadb.PersistentClient(path=str(self._persist_dir))
-        self._collection = self._client.get_or_create_collection(
-            name=_COLLECTION_NAME,
-            embedding_function=self._ef,
-            metadata={"hnsw:space": "cosine"},
-        )
+            self._ef = SentenceTransformerEmbeddingFunction(
+                model_name=self._embedding_model,
+                device="cpu",  # CPU keeps inference stable; GPU reserved for Ollama
+            )
+            self._client = chromadb.PersistentClient(path=str(self._persist_dir))
+            self._collection = self._client.get_or_create_collection(
+                name=_COLLECTION_NAME,
+                embedding_function=self._ef,
+                metadata={"hnsw:space": "cosine"},
+            )
 
     # ------------------------------------------------------------------
     # Public API
@@ -112,6 +123,7 @@ class MemoryStore:
         str
             The document ID assigned to this memory.
         """
+        self._ensure_initialized()
         if not text or not text.strip():
             raise ValueError("Cannot store an empty memory.")
 
@@ -163,6 +175,7 @@ class MemoryStore:
         if not text or not text.strip():
             return []
 
+        self._ensure_initialized()
         floor = threshold if threshold is not None else self._threshold
         count = self._collection.count()
         if count == 0:
@@ -196,6 +209,7 @@ class MemoryStore:
 
     def clear_memory(self) -> None:
         """Delete all stored memories. Intended for development and testing."""
+        self._ensure_initialized()
         with self._lock:
             self._client.delete_collection(_COLLECTION_NAME)
             self._collection = self._client.get_or_create_collection(
@@ -206,4 +220,5 @@ class MemoryStore:
 
     def count(self) -> int:
         """Return the number of memories currently stored."""
+        self._ensure_initialized()
         return self._collection.count()

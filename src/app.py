@@ -259,7 +259,8 @@ with st.sidebar:
                 st.session_state.memory_store.add_memory(
                     _summary,
                     {"source": "session_summary"},
-                )        st.session_state.conversation = []
+                )
+        st.session_state.conversation = []
         st.session_state.message_count = 0
 
     st.divider()
@@ -512,4 +513,5 @@ if user_input:
             st.session_state.conversation,
             st.session_state.selected_model,
             OLLAMA_BASE_URL,
+            vector_store=st.session_state.memory_store,
         )

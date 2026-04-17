@@ -180,10 +180,20 @@ class SoulFile:
         for section, updates in patch.items():
             if isinstance(updates, dict):
                 for key, new_val in updates.items():
+                    # Skip empty-dict values — the model sometimes returns
+                    # {"family": {}} when it detects family content but extracts
+                    # nothing concrete.  Writing these would be a no-op at best
+                    # and misleading in the audit log.
+                    if isinstance(new_val, dict) and not new_val:
+                        continue
                     old_val = (data.get(section) or {}).get(key, "<new>")
                     changes[f"{section}.{key}"] = {"before": old_val, "after": new_val}
             else:
                 changes[section] = {"before": data.get(section, "<new>"), "after": updates}
+
+        if not changes:
+            _get_log().info("apply_patch: all values were empty — skipping write")
+            return
 
         for section, updates in patch.items():
             if isinstance(updates, dict):
@@ -193,6 +203,8 @@ class SoulFile:
                 # dicts (e.g. identity.personality_notes), merge recursively so that
                 # successive patches accumulate entries rather than overwriting them.
                 for key, value in updates.items():
+                    if isinstance(value, dict) and not value:
+                        continue  # skip empty dicts
                     existing = data[section].get(key)
                     if isinstance(existing, dict) and isinstance(value, dict):
                         existing.update(value)
@@ -262,8 +274,9 @@ def _patch_worker(
         from src.llm.client import OllamaClient
         from src.llm.prompts import SOUL_PATCH_PROMPT
 
-        # Use only the last 6 messages (3 exchanges) to keep the prompt compact
-        snippet = conversation_snapshot[-6:]
+        # Use the last 12 messages (6 exchanges) so early-conversation facts
+        # are still in scope when the patch runs after several turns.
+        snippet = conversation_snapshot[-12:]
         conv_text = "\n".join(
             f"{m['role'].capitalize()}: {m['content']}" for m in snippet
         )

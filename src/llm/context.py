@@ -83,8 +83,8 @@ class ContextBudget:
     total_tokens: int = 8192
     response_reserve: int = 512
 
-    soul_pct: float = 0.20
-    history_pct: float = 0.50
+    soul_pct: float = 0.35
+    history_pct: float = 0.35
     rag_vision_pct: float = 0.20
     misc_pct: float = 0.10
 

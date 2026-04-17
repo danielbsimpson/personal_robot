@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from src.memory.soul import SoulFile
+    from src.memory.vector_store import MemoryStore
 
 # How many user turns between extraction passes.
 # Deliberately offset from SOUL_UPDATE_EVERY (3) to avoid piling LLM calls.
@@ -106,23 +107,25 @@ class MemoryExtractor:
         self,
         candidates: list[dict],
         soul: "SoulFile",
-        memory_store: Optional[dict] = None,
+        soul_data: Optional[dict] = None,
+        vector_store: Optional["MemoryStore"] = None,
     ) -> None:
-        """Run each candidate through ``should_store()`` and log the decision.
+        """Run each candidate through ``should_store()`` and persist approved facts.
 
-        Phase 2.4 will wire the approved candidates into ``apply_patch()`` /
-        ``MemoryStore.add_memory()``.  For now this method only logs, keeping
-        the extractor safe to enable before the full RAG stack is in place.
+        Facts passing the ``"long_term"`` gate are written to *vector_store* so
+        they can be retrieved via RAG in future sessions.  Facts rated
+        ``"short_term_only"`` are logged but not persisted.
 
         Args:
-            candidates:    Output of ``extract_candidates()``.
-            soul:          Live ``SoulFile`` instance for repeat-detection.
-            memory_store:  Pre-loaded soul dict (avoids a second file read if
-                           you already have it; falls back to ``soul.load()``).
+            candidates:   Output of ``extract_candidates()``.
+            soul:         Live ``SoulFile`` instance for repeat-detection.
+            soul_data:    Pre-loaded soul dict (avoids a second file read if
+                          you already have it; falls back to ``soul.load()``).
+            vector_store: ``MemoryStore`` instance to write long-term facts into.
         """
         from src.memory.policy import should_store
 
-        store = memory_store if memory_store is not None else soul.load()
+        store = soul_data if soul_data is not None else soul.load()
 
         for item in candidates:
             fact = item["fact"]
@@ -138,6 +141,18 @@ class MemoryExtractor:
                 store_flag,
                 reason,
             )
+            if store_flag and reason == "long_term" and vector_store is not None:
+                try:
+                    vector_store.add_memory(
+                        fact,
+                        {
+                            "source": "extractor",
+                            "category": item.get("category", "unknown"),
+                        },
+                    )
+                    _get_log().info("extractor: persisted to vector store — %r", fact)
+                except Exception as exc:
+                    _get_log().error("extractor: failed to persist %r: %s", fact, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -149,24 +164,37 @@ def _extract_worker(
     extractor: MemoryExtractor,
     soul: "SoulFile",
     conversation_snapshot: list[dict],
+    vector_store: Optional["MemoryStore"] = None,
 ) -> None:
-    """Worker executed in a daemon thread — extract and evaluate the last user turn."""
+    """Worker executed in a daemon thread — extract facts from recent user turns."""
     log = _get_log()
     log.info("extract_worker start — msgs=%d", len(conversation_snapshot))
     try:
-        user_turns = [m for m in conversation_snapshot if m.get("role") == "user"]
+        # Scan the last 10 messages so facts stated a few turns ago are not missed.
+        # The last user turn alone is too narrow — by the time EXTRACT_EVERY fires,
+        # the informative turns may already be behind the cursor.
+        recent = conversation_snapshot[-10:]
+        user_turns = [m for m in recent if m.get("role") == "user"]
         if not user_turns:
             log.info("extract_worker: no user turns found")
             return
 
-        last_turn = user_turns[-1]
-        candidates = extractor.extract_candidates(last_turn)
-        if not candidates:
+        all_candidates: list[dict] = []
+        seen_facts: set[str] = set()
+        for turn in user_turns:
+            for c in extractor.extract_candidates(turn):
+                key = c["fact"].lower().strip()
+                if key not in seen_facts:
+                    seen_facts.add(key)
+                    all_candidates.append(c)
+
+        if not all_candidates:
             log.info("extract_worker: no candidates found")
             return
 
-        log.info("extract_worker: %d candidate(s) found", len(candidates))
-        extractor.commit(candidates, soul)
+        log.info("extract_worker: %d candidate(s) found across %d turns",
+                 len(all_candidates), len(user_turns))
+        extractor.commit(all_candidates, soul, vector_store=vector_store)
 
     except Exception as exc:
         log.error("extract_worker error: %s", exc, exc_info=True)
@@ -182,6 +210,7 @@ def maybe_extract_memories(
     conversation: list[dict],
     model: str,
     base_url: str = "http://localhost:11434",
+    vector_store: Optional["MemoryStore"] = None,
 ) -> None:
     """Spawn a daemon thread to extract and evaluate memory candidates.
 
@@ -193,11 +222,12 @@ def maybe_extract_memories(
         conversation: Current conversation history (will be snapshot-copied).
         model:        Ollama model tag to use for extraction.
         base_url:     Ollama server URL.
+        vector_store: ``MemoryStore`` instance for persisting long-term facts.
     """
     extractor = MemoryExtractor(model=model, base_url=base_url)
     thread = threading.Thread(
         target=_extract_worker,
-        args=(extractor, soul, list(conversation)),
+        args=(extractor, soul, list(conversation), vector_store),
         daemon=True,
     )
     thread.start()

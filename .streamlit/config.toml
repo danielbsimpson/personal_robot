@@ -1,0 +1,6 @@
+[server]
+# Prevent Streamlit's file watcher from crawling site-packages (e.g. transformers),
+# which causes spurious "No module named 'torchvision'" errors in the terminal.
+# Hot-reload still works for files inside the project directory.
+fileWatcherType = "poll"
+folderWatchBlacklist = [".venv", "venv", "env", "site-packages"]
