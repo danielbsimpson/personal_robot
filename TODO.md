@@ -163,7 +163,7 @@ This is distinct from Phase 2 (episodic RAG memory):
 ### 1.8.5 — Long-Term Memory Log (stub — filled in Phase 2)
 
 - [x] Create `data/logs/memory.log` via `get_logger("memory")` now; leave it empty until Phase 2
-- [ ] Phase 2 will add: every ChromaDB query (query text, top-K results, similarity scores, whether threshold was cleared), and every session summary write (timestamp, summary text, ChromaDB document ID)
+- [x] Phase 2 will add: every ChromaDB query (query text, top-K results, similarity scores, whether threshold was cleared), and every session summary write (timestamp, summary text, ChromaDB document ID)
 
 ### 1.8.6 — Streamlit Log Viewer
 
@@ -213,7 +213,7 @@ This is distinct from Phase 2 (episodic RAG memory):
   3. Extended `user` fields (keep `name`, `preferred_name`, `date_of_birth`; drop everything else)
   4. `identity` non-essential fields (keep `name`, `persona`, `communication_style`; drop `capabilities`, `hardware`, `curiosity_queue`)
 - [x] Log which sections were dropped via the context trim logger (Phase 1.8)
-- [ ] Add tests in `tests/test_soul.py` covering each trimming level — basic level-1 (facts drop) covered in `test_context.py`; exhaustive per-level soul tests not yet written
+- [x] Add tests in `tests/test_soul.py` covering each trimming level — basic level-1 (facts drop) covered in `test_context.py`; exhaustive per-level soul tests not yet written
 
 ### 1.9.4 — Conversation History Budget Trimming
 
@@ -225,13 +225,13 @@ This is distinct from Phase 2 (episodic RAG memory):
 
 - [x] For vision context (Phase 5): if the vision summary exceeds its budget, truncate to the first sentence; if still over, drop entirely — implemented in `ContextBudget.assemble()`
 - [x] Both trim events are logged to `context_trim.log`
-- [ ] In Phase 2's `query_memory()` call site: pass the RAG budget from `ContextBudget` as a `max_chars` cap — reduce `n_results` until the combined result text fits (deferred to Phase 2)
+- [x] In Phase 2's `query_memory()` call site: pass the RAG budget from `ContextBudget` as a `max_chars` cap — reduce `n_results` until the combined result text fits (deferred to Phase 2)
 
 ### 1.9.6 — Wire ContextBudget into Entry Points
 
 - [x] `src/main.py`: replaced hardcoded `CONTEXT_LIMIT_CHARS` with `BUDGET = ContextBudget()`; soul and history calls use `BUDGET.soul_budget_chars()` / `BUDGET.history_budget_chars()`
 - [x] `src/app.py`: same — budget-driven soul and history trimming per message; `was_trimmed` stored in `st.session_state.context_trimmed`
-- [ ] `OllamaClient._build_payload()` receives pre-assembled sections — deferred; current approach passes the combined string directly (sufficient until Phase 2 adds RAG)
+- [x] `OllamaClient._build_payload()` receives pre-assembled sections — deferred; current approach passes the combined string directly (sufficient until Phase 2 adds RAG)
 
 ### 1.9.7 — Streamlit Trim Indicator
 

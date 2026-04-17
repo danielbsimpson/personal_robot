@@ -142,6 +142,125 @@ def test_to_prompt_section_returns_empty_string_when_no_file(soul: SoulFile) -> 
 
 
 # ---------------------------------------------------------------------------
+# to_prompt_section — budget trimming levels
+# ---------------------------------------------------------------------------
+
+def _render_soul(data: dict) -> str:
+    """Replicate the internal render used by to_prompt_section for budget sizing."""
+    soul_yaml = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    return f"## About Me\n\n```yaml\n{soul_yaml}```"
+
+
+@pytest.fixture
+def fat_soul(tmp_path: Path) -> SoulFile:
+    """SoulFile with all sections fully populated — used for budget-trimming tests."""
+    data = {
+        "identity": {
+            "name": "Orion",
+            "persona": "warm robot",
+            "communication_style": "concise",
+            "capabilities": ["talk"],
+            "hardware": "RTX 4060",
+            "curiosity_queue": ["What is life?"],
+        },
+        "user": {
+            "name": "Daniel",
+            "preferred_name": "Dan",
+            "date_of_birth": "1990-01-01",
+            "location": "UK",
+            "job": "engineer",
+            "hobbies": ["hiking"],
+        },
+        "partner": {
+            "name": "Danielle",
+            "preferred_name": "Danielle",
+            "relationship": "partner",
+            "job": "nurse",
+        },
+        "environment": {
+            "location": "home office",
+            "hardware": ["laptop"],
+        },
+        "facts": {"pet": "Max the dog"},
+    }
+    s = SoulFile(path=tmp_path / "soul.yaml")
+    s.save(data)
+    return s
+
+
+def test_to_prompt_section_trim_level1_drops_facts(fat_soul: SoulFile) -> None:
+    """Level 1: when full text doesn't fit but text-without-facts does, facts are dropped."""
+    data = fat_soul.load()
+    l1_data = {k: v for k, v in data.items() if k != "facts"}
+    budget = len(_render_soul(l1_data))
+    result = fat_soul.to_prompt_section(budget_chars=budget)
+    assert "pet:" not in result
+    assert "home office" in result  # environment still present
+
+
+def test_to_prompt_section_trim_level2_drops_environment(fat_soul: SoulFile) -> None:
+    """Level 2: when level-1 still doesn't fit, environment is also dropped."""
+    data = fat_soul.load()
+    l2_data = {k: v for k, v in data.items() if k not in {"facts", "environment"}}
+    budget = len(_render_soul(l2_data))
+    result = fat_soul.to_prompt_section(budget_chars=budget)
+    assert "home office" not in result
+    assert "hobbies:" in result  # extended user fields retained
+
+
+def test_to_prompt_section_trim_level3_reduces_user_to_core(fat_soul: SoulFile) -> None:
+    """Level 3: when level-2 still doesn't fit, user is trimmed to core fields."""
+    data = fat_soul.load()
+    _USER_CORE = {"name", "preferred_name", "date_of_birth", "location"}
+    l2_data = {k: v for k, v in data.items() if k not in {"facts", "environment"}}
+    l3_data = dict(l2_data)
+    l3_data["user"] = {k: v for k, v in l3_data["user"].items() if k in _USER_CORE}
+    budget = len(_render_soul(l3_data))
+    result = fat_soul.to_prompt_section(budget_chars=budget)
+    assert "hobbies:" not in result
+    assert "job: engineer" not in result
+    assert "name: Daniel" in result      # core user field retained
+    assert "capabilities:" in result    # identity extended fields still present
+
+
+def test_to_prompt_section_trim_level4_reduces_identity_to_core(fat_soul: SoulFile) -> None:
+    """Level 4: when level-3 still doesn't fit, identity is trimmed to core fields."""
+    data = fat_soul.load()
+    _USER_CORE = {"name", "preferred_name", "date_of_birth", "location"}
+    _IDENTITY_CORE = {"name", "persona", "communication_style"}
+    l2_data = {k: v for k, v in data.items() if k not in {"facts", "environment"}}
+    l3_data = dict(l2_data)
+    l3_data["user"] = {k: v for k, v in l3_data["user"].items() if k in _USER_CORE}
+    l4_data = dict(l3_data)
+    l4_data["identity"] = {k: v for k, v in l4_data["identity"].items() if k in _IDENTITY_CORE}
+    budget = len(_render_soul(l4_data))
+    result = fat_soul.to_prompt_section(budget_chars=budget)
+    assert "capabilities:" not in result
+    assert "hardware: RTX" not in result
+    assert "name: Orion" in result      # core identity field retained
+    assert "job: nurse" in result       # partner extended fields still present
+
+
+def test_to_prompt_section_trim_level5_reduces_partner_to_core(fat_soul: SoulFile) -> None:
+    """Level 5: when level-4 still doesn't fit, partner is trimmed to core fields."""
+    data = fat_soul.load()
+    _USER_CORE = {"name", "preferred_name", "date_of_birth", "location"}
+    _IDENTITY_CORE = {"name", "persona", "communication_style"}
+    _PARTNER_CORE = {"name", "preferred_name", "relationship"}
+    l2_data = {k: v for k, v in data.items() if k not in {"facts", "environment"}}
+    l3_data = dict(l2_data)
+    l3_data["user"] = {k: v for k, v in l3_data["user"].items() if k in _USER_CORE}
+    l4_data = dict(l3_data)
+    l4_data["identity"] = {k: v for k, v in l4_data["identity"].items() if k in _IDENTITY_CORE}
+    l5_data = dict(l4_data)
+    l5_data["partner"] = {k: v for k, v in l5_data["partner"].items() if k in _PARTNER_CORE}
+    budget = len(_render_soul(l5_data))
+    result = fat_soul.to_prompt_section(budget_chars=budget)
+    assert "job: nurse" not in result
+    assert "name: Danielle" in result   # core partner field retained
+
+
+# ---------------------------------------------------------------------------
 # SoulFile.as_yaml_string
 # ---------------------------------------------------------------------------
 
