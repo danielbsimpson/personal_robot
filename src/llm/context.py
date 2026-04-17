@@ -103,6 +103,14 @@ class ContextBudget:
         """Character budget shared by RAG memories and vision context."""
         return int(self._usable_tokens() * self.rag_vision_pct) * CHARS_PER_TOKEN
 
+    def rag_budget_chars(self) -> int:
+        """Character budget for RAG (Relevant Memory) text only.
+
+        Uses the full rag_vision allocation until Phase 5 adds vision — at
+        that point the two will share the budget 50/50.
+        """
+        return self.rag_vision_budget_chars()
+
     def misc_budget_chars(self) -> int:
         """Character budget for time/misc sections."""
         return int(self._usable_tokens() * self.misc_pct) * CHARS_PER_TOKEN

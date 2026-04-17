@@ -29,6 +29,20 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_MEMORY_DIR = _PROJECT_ROOT / "data" / "memory"
 _COLLECTION_NAME = "orion_memories"
 
+# ---------------------------------------------------------------------------
+# Lazy memory logger
+# ---------------------------------------------------------------------------
+
+_mem_log = None
+
+
+def _get_mem_log():
+    global _mem_log
+    if _mem_log is None:
+        from src.utils.log import get_logger
+        _mem_log = get_logger("memory")
+    return _mem_log
+
 
 # ---------------------------------------------------------------------------
 # MemoryStore
@@ -116,6 +130,12 @@ class MemoryStore:
                 documents=[text],
                 metadatas=[meta_arg],
             )
+        _get_mem_log().info(
+            "add_memory: stored doc_id=%s len=%d metadata=%s",
+            doc_id,
+            len(text),
+            meta,
+        )
         return doc_id
 
     def query_memory(
@@ -165,6 +185,13 @@ class MemoryStore:
             for doc, dist in zip(documents, distances)
             if (1.0 - dist) >= floor
         ]
+        _get_mem_log().info(
+            "query_memory: query=%r n_candidates=%d threshold=%.2f matched=%d",
+            text[:80],
+            len(documents),
+            floor,
+            len(filtered),
+        )
         return filtered
 
     def clear_memory(self) -> None:

@@ -27,6 +27,8 @@ from src.llm.prompts import BASE_SYSTEM_PROMPT, get_time_section
 from src.memory.soul import SoulFile, maybe_update_soul, maybe_grow_curiosity, SOUL_UPDATE_EVERY, SOUL_CURIOSITY_EVERY
 from src.memory.policy import is_filler_message
 from src.memory.extractor import maybe_extract_memories, EXTRACT_EVERY
+from src.memory.vector_store import MemoryStore
+from src.memory.summariser import summarise_session
 from src.utils.log import ConversationLogger, get_logger, _DEFAULT_LOGS_DIR
 
 # ---------------------------------------------------------------------------
@@ -196,6 +198,9 @@ if "message_count" not in st.session_state:
 if "conv_logger" not in st.session_state:
     st.session_state.conv_logger = ConversationLogger(model=st.session_state.selected_model)
 
+if "memory_store" not in st.session_state:
+    st.session_state.memory_store = MemoryStore()
+
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
@@ -243,8 +248,18 @@ with st.sidebar:
 
     # --- Clear conversation ---
     # Button click triggers a natural rerun; no explicit st.rerun() needed.
-    if st.button("🗑️ Clear conversation", use_container_width=True):
-        st.session_state.conversation = []
+    if st.button("🗑️ Clear conversation", use_container_width=True):        # Persist a summary from the departing session before wiping history.
+        if st.session_state.conversation:
+            _summary = summarise_session(
+                st.session_state.conversation,
+                model=st.session_state.selected_model,
+                base_url=OLLAMA_BASE_URL,
+            )
+            if _summary:
+                st.session_state.memory_store.add_memory(
+                    _summary,
+                    {"source": "session_summary"},
+                )        st.session_state.conversation = []
         st.session_state.message_count = 0
 
     st.divider()
@@ -409,6 +424,22 @@ if user_input:
     time_section = get_time_section()
     if time_section:
         combined_prompt = f"{combined_prompt}\n\n{time_section}"
+
+    # RAG injection — query long-term memory for context relevant to this message
+    if not is_filler_message(user_input):
+        rag_results = st.session_state.memory_store.query_memory(user_input)
+        if rag_results:
+            rag_budget = BUDGET.rag_budget_chars()
+            kept, total_chars = [], 0
+            for result in rag_results:
+                entry = f"- {result}"
+                if total_chars + len(entry) + 1 > rag_budget:
+                    break
+                kept.append(entry)
+                total_chars += len(entry) + 1
+            if kept:
+                rag_section = "## Relevant Memory\n\n" + "\n".join(kept)
+                combined_prompt = f"{combined_prompt}\n\n{rag_section}"
 
     client = OllamaClient(
         model=st.session_state.selected_model,

@@ -314,22 +314,29 @@ Codify the go/no-go logic as a reusable utility so it can be called from both th
 
 ### 2.2 — Embeddings (`src/memory/embeddings.py`)
 
-- [ ] Download and cache `all-MiniLM-L6-v2` model from `sentence-transformers`
-- [ ] Create an `Embedder` class with an `embed(text: str) -> list[float]` method
-- [ ] Confirm embeddings are generated on CPU (reserve GPU for LLM inference)
+- [x] Download and cache `all-MiniLM-L6-v2` model from `sentence-transformers` — already cached locally from Phase 2.1 tests; no network needed
+- [x] Create an `Embedder` class with an `embed(text: str) -> list[float]` method and `embed_batch(texts: list[str]) -> list[list[float]]`; model loaded lazily and cached with a module-level dict + lock so multiple instances share one load
+- [x] Confirm embeddings are generated on CPU — `device="cpu"` hardcoded; matches the device used by `MemoryStore` so vectors are in the same embedding space
+- [x] Write `tests/test_embeddings.py` — 15/15 passing (dimension=384, idempotency, empty rejection, semantic similarity ordering, batch, shared cache)
 
 ### 2.3 — Session Summariser (`src/memory/summariser.py`)
 
-- [ ] Write a `summarise_session(conversation_history: list[dict]) -> str` function
-- [ ] Feed the full conversation to the LLM with a summarisation prompt
-- [ ] Return a concise paragraph capturing key facts, preferences, or information mentioned
+- [x] Write a `summarise_session(conversation_history, model, base_url, min_turns) -> str` function — returns `""` when fewer than `MIN_TURNS = 2` user turns (no LLM call, nothing to store); truncates transcripts over `MAX_CONV_CHARS = 12_000` from the front before sending
+- [x] Feed the full conversation to the LLM with `SUMMARISE_SESSION_PROMPT`; strips system messages and `[Earlier context summary]` trim artefacts before forwarding
+- [x] Return a concise paragraph capturing key facts, preferences, or information mentioned; returns `""` if the LLM response is whitespace-only so Phase 2.4 can skip the `add_memory()` call
+- [x] Write `tests/test_summariser.py` — 19/19 passing (helper functions, short-circuit paths, mocked LLM path, truncation, and a live integration test skipped when Ollama is unavailable)
 
 ### 2.4 — Integrate Memory into Conversation Loop
 
-- [ ] On each user message: embed the message and query `MemoryStore` for top-5 relevant past session summaries
-- [ ] Only inject the `## Relevant Memory` block when at least one result clears the similarity threshold — skip entirely if nothing is relevant; Orion should not reach into long-term memory unless necessary
-- [ ] On conversation end (graceful exit): call `summarise_session()` and save the summary to `MemoryStore`
-- [ ] Write `tests/test_memory.py` to confirm persistence across two separate Python runs
+- [x] On each user message: embed the message and query `MemoryStore` for top-5 relevant past session summaries
+- [x] Only inject the `## Relevant Memory` block when at least one result clears the similarity threshold — skip entirely if nothing is relevant; Orion should not reach into long-term memory unless necessary
+- [x] On conversation end (graceful exit): call `summarise_session()` and save the summary to `MemoryStore`
+- [x] Wire `rag_budget_chars()` into `ContextBudget`; cap injected results by character budget (drop trailing results until total fits)
+- [x] `app.py`: save session summary when "🗑️ Clear conversation" is clicked before resetting history
+- [x] `main.py`: save session summary in `try/finally` so both graceful quit and Ctrl-C are covered
+- [x] Add `## Relevant Memory` guideline to `BASE_SYSTEM_PROMPT` so the model knows how to use it
+- [x] Log every `add_memory()` and `query_memory()` call to `data/logs/memory.log` (Phase 1.8.5 stub filled)
+- [x] Write `tests/test_rag_integration.py` — 17 tests covering budget logic, injection, save-session, and memory logging
 
 ---
 
