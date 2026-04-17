@@ -252,11 +252,11 @@ This is distinct from Phase 2 (episodic RAG memory):
 
 ---
 
-## Phase 1.95 — Memory Strategy & Intelligence
+## Phase 1.9b — Memory Strategy & Intelligence
 
 **Goal**: Define and implement the decision logic that governs *what* gets stored in short-term vs. long-term memory, rather than just *how* to store it. This phase codifies the memory policy so all later phases (Phase 2 RAG, soul file updates) follow consistent rules.
 
-### 1.95.1 — Short-Term Memory Policy (within a session)
+### 1.9b.1 — Short-Term Memory Policy (within a session)
 
 Short-term memory covers everything needed to maintain coherence in the current conversation — recent turns, clarifications, and established context.
 
@@ -265,7 +265,7 @@ Short-term memory covers everything needed to maintain coherence in the current 
 - [ ] Implement **entity/state tracking**: if a message updates a known entity (user name, preference, stated goal), replace the old value in the session state rather than appending a duplicate — deferred (requires NLP stack)
 - [x] Implement **compression on overflow**: `compress_history()` in `src/llm/client.py` — when the recency window is full, summarises the oldest turn-pairs via `SUMMARISE_SESSION_PROMPT` into a single `[Earlier context summary]` system entry rather than discarding them; falls back to plain trim if Ollama is unavailable
 
-### 1.95.2 — Long-Term Memory Policy (across sessions)
+### 1.9b.2 — Long-Term Memory Policy (across sessions)
 
 Long-term memory (soul file + Phase 2 RAG) should only persist durably useful information. The bar is deliberately higher than short-term.
 
@@ -276,7 +276,7 @@ Long-term memory (soul file + Phase 2 RAG) should only persist durably useful in
 - [ ] Implement **decay and review**: add a `last_reinforced` timestamp to each soul entry; flag entries not reinforced in 30 days — deferred (requires YAML schema changes and a review cron)
 - [x] Define a **category whitelist** for long-term storage: `LONG_TERM_CATEGORIES` frozenset in `policy.py` covers `user_preferences`, `biographical_facts`, `relationships`, `domain_expertise`, `project_context`; enforced in `should_store()` gate 2
 
-### 1.95.3 — Memory Decision Flow
+### 1.9b.3 — Memory Decision Flow
 
 Codify the go/no-go logic as a reusable utility so it can be called from both the soul-update path and the future RAG write path.
 
@@ -287,7 +287,7 @@ Codify the go/no-go logic as a reusable utility so it can be called from both th
   4. **Is it stable and confident enough to trust?** → Return `(True, "long_term")` only if confidence exceeds the threshold; otherwise return `(True, "short_term_only")`
 - [x] Write `tests/test_memory_policy.py` covering all four branches of the decision flow — 25/25 passing
 
-### 1.95.4 — Two-Pass Extraction Architecture
+### 1.9b.4 — Two-Pass Extraction Architecture
 
 - [x] Implement a **two-pass approach** for memory extraction: the main `OllamaClient` handles the conversation; a separate lightweight extraction call fires every `EXTRACT_EVERY = 5` turns (deliberately offset from `SOUL_UPDATE_EVERY = 3`) to decide what to commit to memory
 - [x] Create `src/memory/extractor.py` with a `MemoryExtractor` class:

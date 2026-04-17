@@ -158,7 +158,7 @@ When a tier is over-budget, sections are cut in this order (highest priority sur
 - **Streamlit indicator** — if any trimming occurred on the last message, a subtle `⚠ context trimmed` badge appears next to the message count in the sidebar; clicking it opens the Context trim log tab
 - **Tests**: `tests/test_context.py` — 10/10 passing
 
-### ✅ Phase 1.95 — Memory Strategy & Intelligence *(complete)*
+### ✅ Phase 1.9b — Memory Strategy & Intelligence *(complete)*
 
 Decision logic governing *what* gets stored in short-term vs. long-term memory, so all later phases follow consistent rules.
 
