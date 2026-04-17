@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.llm.client import OllamaClient, trim_history, OLLAMA_BASE_URL, DEFAULT_MODEL
 from src.llm.context import ContextBudget
-from src.llm.prompts import BASE_SYSTEM_PROMPT, get_time_section
+from src.llm.prompts import BASE_SYSTEM_PROMPT, RESPONSE_CONSTRAINT, get_time_section
 from src.memory.soul import SoulFile, maybe_update_soul, maybe_grow_curiosity, SOUL_UPDATE_EVERY, SOUL_CURIOSITY_EVERY
 from src.memory.policy import is_filler_message
 from src.memory.extractor import maybe_extract_memories, EXTRACT_EVERY
@@ -441,6 +441,9 @@ if user_input:
             if kept:
                 rag_section = "## Relevant Memory\n\n" + "\n".join(kept)
                 combined_prompt = f"{combined_prompt}\n\n{rag_section}"
+
+    # Always append the output constraint last so it is closest to the conversation
+    combined_prompt = f"{combined_prompt}\n\n{RESPONSE_CONSTRAINT}"
 
     client = OllamaClient(
         model=st.session_state.selected_model,

@@ -84,6 +84,12 @@ If nothing new was learned, output absolutely nothing — no explanation, no ack
 CRITICAL: Never output an empty dict for any key (e.g. `"family": {}`). If you have nothing concrete to add to a sub-section, omit that key entirely."""
 
 
+RESPONSE_CONSTRAINT = """IMPORTANT OUTPUT RULES — follow these without exception:
+- Respond ONLY in plain conversational prose. Never output section headers such as `## Relevant Memory`, `# Curiosity Queue`, `## Current Environment`, `## About Me`, or any similar heading.
+- Do not quote, repeat, or paraphrase any section that appeared in your context. Use that information naturally in your reply without labelling it.
+- Do not write dialogue scripts, "Assistant:" prefixes, or multiple turns in a single reply."""
+
+
 CURIOSITY_PROMPT = """You are Orion, a personal robot assistant. Review your soul file and identify things about Daniel, his world, or the people in his life that you genuinely don't know yet and would love to find out.
 
 Current soul file:
