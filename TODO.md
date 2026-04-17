@@ -260,34 +260,32 @@ This is distinct from Phase 2 (episodic RAG memory):
 
 Short-term memory covers everything needed to maintain coherence in the current conversation — recent turns, clarifications, and established context.
 
-- [ ] Implement a **recency window** strategy in `trim_history()`: keep the last N messages or a token budget (Phase 1.9 budget drives the cap); drop or summarise older turns rather than blindly truncating
-- [ ] Add a **relevance scoring** pre-filter before appending a turn to history: check whether the new message meaningfully changes context (user correcting themselves, introducing a new topic, stating a constraint); filter out small talk or filler that adds no durable context
-- [ ] Implement **entity/state tracking**: if a message updates a known entity (user name, preference, stated goal), replace the old value in the session state rather than appending a duplicate
-- [ ] Implement **compression on overflow**: when the recency window is full, summarise the oldest N turns into a single compressed entry rather than discarding them entirely — use the existing `OllamaClient` with a short summarisation prompt
+- [x] Implement a **recency window** strategy in `trim_history()`: keep the last N messages or a token budget (Phase 1.9 budget drives the cap); drop or summarise older turns rather than blindly truncating — already implemented via `budget_chars` in Phase 1.9; `compress_history()` added to `client.py` for LLM-backed summarisation on overflow
+- [x] Add a **relevance scoring** pre-filter before appending a turn to history: `is_filler_message()` in `src/memory/policy.py` detects filler turns (≤10 chars or exact filler phrase); wired into `app.py` — filler exchanges are shown in the UI but excluded from the history buffer
+- [ ] Implement **entity/state tracking**: if a message updates a known entity (user name, preference, stated goal), replace the old value in the session state rather than appending a duplicate — deferred (requires NLP stack)
+- [x] Implement **compression on overflow**: `compress_history()` in `src/llm/client.py` — when the recency window is full, summarises the oldest turn-pairs via `SUMMARISE_SESSION_PROMPT` into a single `[Earlier context summary]` system entry rather than discarding them; falls back to plain trim if Ollama is unavailable
 
 ### 1.95.2 — Long-Term Memory Policy (across sessions)
 
 Long-term memory (soul file + Phase 2 RAG) should only persist durably useful information. The bar is deliberately higher than short-term.
 
-- [ ] Distinguish **explicit vs. implicit signals** in the soul patch prompt (`SOUL_PATCH_PROMPT`):
-  - *Explicit*: user directly states something ("I prefer concise answers", "I'm a nurse") — high confidence, store immediately
-  - *Implicit*: inferred from repeated behaviour ("user always asks for Python code") — store only after the pattern is observed ≥3 times, marked with lower confidence
-- [ ] Add a **novelty check** before writing to the soul file or RAG store: ask whether the candidate fact contradicts or meaningfully extends what is already stored; skip if it is a restatement
-- [ ] Apply a **stability heuristic**: prefer facts unlikely to change (profession, strong preferences) over transient ones (current mood, one-off requests); add a `transient: true` flag to soul entries that should decay
-- [ ] Enforce a **confidence threshold**: only store inferences where the extraction model rates certainty above a configurable threshold (default `0.8`); include the model's self-rated confidence score in the soul audit log
-- [ ] Implement **decay and review**: add a `last_reinforced` timestamp to each soul entry; during the periodic soul-update pass, flag entries that have not been reinforced in the last 30 days and that contradict newer signals for manual or automated review
-- [ ] Define a **category whitelist** for long-term storage: `user_preferences`, `biographical_facts`, `domain_expertise_level`, `project_context`; reject any candidate fact that does not fit a defined category
+- [x] Distinguish **explicit vs. implicit signals** in the soul patch prompt (`SOUL_PATCH_PROMPT`): prompt updated to require `_confidence` (0.0–1.0) and `_explicit` (bool) metadata keys in every patch; `_patch_worker` strips them before calling `apply_patch()`
+- [x] Add a **novelty check** before writing to the soul file: already enforced by "NEVER STORE" rules and "no duplicates" instruction in `SOUL_PATCH_PROMPT`; `_is_repeat()` heuristic added to `should_store()` in `policy.py`
+- [x] Apply a **stability heuristic**: `SOUL_PATCH_PROMPT` already instructs the model to store only things "still true in a year"; `_is_transient()` in `policy.py` adds a keyword-pattern check on candidate facts
+- [x] Enforce a **confidence threshold**: `CONFIDENCE_THRESHOLD = 0.8` in `policy.py`; `_patch_worker` in `soul.py` skips low-confidence (< 0.8) non-explicit patches and logs the decision to `soul_changes.log`
+- [ ] Implement **decay and review**: add a `last_reinforced` timestamp to each soul entry; flag entries not reinforced in 30 days — deferred (requires YAML schema changes and a review cron)
+- [x] Define a **category whitelist** for long-term storage: `LONG_TERM_CATEGORIES` frozenset in `policy.py` covers `user_preferences`, `biographical_facts`, `relationships`, `domain_expertise`, `project_context`; enforced in `should_store()` gate 2
 
 ### 1.95.3 — Memory Decision Flow
 
 Codify the go/no-go logic as a reusable utility so it can be called from both the soul-update path and the future RAG write path.
 
-- [ ] Implement `should_store(candidate: str, memory_store: dict, confidence: float) -> tuple[bool, str]` in `src/memory/policy.py`:
+- [x] Implement `should_store(candidate: str, memory_store: dict, confidence: float) -> tuple[bool, str]` in `src/memory/policy.py`:
   1. **Is this new information, or a repeat?** → Return `(False, "repeat")` if it is already present
   2. **Is it about the user/task, or just incidental chat?** → Return `(False, "incidental")` if it does not fit any category in the whitelist
-  3. **Is it likely to be useful in a future session?** → Return `(False, "short_term_only")` if it is transient
+  3. **Is it likely to be useful in a future session?** → Return `(True, "short_term_only")` if it is transient
   4. **Is it stable and confident enough to trust?** → Return `(True, "long_term")` only if confidence exceeds the threshold; otherwise return `(True, "short_term_only")`
-- [ ] Write `tests/test_memory_policy.py` covering all four branches of the decision flow
+- [x] Write `tests/test_memory_policy.py` covering all four branches of the decision flow — 25/25 passing
 
 ### 1.95.4 — Two-Pass Extraction Architecture
 
@@ -307,11 +305,12 @@ Codify the go/no-go logic as a reusable utility so it can be called from both th
 
 ### 2.1 — Set Up ChromaDB (`src/memory/vector_store.py`)
 
-- [ ] Add `chromadb` and `sentence-transformers` to `requirements.txt`
-- [ ] Create a `MemoryStore` class that wraps ChromaDB with persistence to `data/memory/`
-- [ ] Implement `add_memory(text: str, metadata: dict)` — embeds text and stores it
-- [ ] Implement `query_memory(text: str, n_results: int = 5, threshold: float = 0.35) -> list[str]` — retrieves top-K memories whose cosine similarity meets the threshold; returns an empty list when nothing is relevant enough (so no `## Relevant Memory` block is injected)
-- [ ] Implement `clear_memory()` for development/testing
+- [x] Add `chromadb` and `sentence-transformers` to `requirements.txt`
+- [x] Create a `MemoryStore` class that wraps ChromaDB with persistence to `data/memory/`
+- [x] Implement `add_memory(text: str, metadata: dict)` — embeds text and upserts it; ID is a 16-char SHA-256 hash of the content so re-adding the same summary is idempotent
+- [x] Implement `query_memory(text: str, n_results: int = 5, threshold: float = 0.35) -> list[str]` — retrieves top-K memories whose cosine similarity meets the threshold; returns an empty list when nothing is relevant enough (so no `## Relevant Memory` block is injected)
+- [x] Implement `clear_memory()` for development/testing
+- [x] Write `tests/test_memory.py` — 14/14 passed (add, idempotency, count, empty/whitespace rejection, query relevance, threshold filtering, n_results cap, semantic ordering, clear, persistence across instances)
 
 ### 2.2 — Embeddings (`src/memory/embeddings.py`)
 

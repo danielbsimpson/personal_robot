@@ -172,3 +172,70 @@ def trim_history(
         )
 
     return messages
+
+
+def compress_history(
+    messages: list[dict],
+    budget_chars: int,
+    client: "OllamaClient",
+) -> list[dict]:
+    """Replace the oldest messages with a compact LLM-generated summary.
+
+    When the recency window is full this function summarises the exchange pairs
+    that would be dropped by ``trim_history()`` and substitutes them with a
+    single ``{"role": "system", "content": "[Earlier context] ..."}`` entry.
+    This preserves more information across a long conversation at the cost of
+    one extra LLM call when overflow occurs.
+
+    If summarisation fails (Ollama unavailable, timeout, etc.) the function
+    falls back silently to the plain trimmed history so the conversation is
+    never blocked.
+
+    Args:
+        messages:     History list (no system message).
+        budget_chars: Target character budget for the returned list.
+        client:       An ``OllamaClient`` instance used for summarisation.
+
+    Returns:
+        History list that fits within *budget_chars*, with the oldest messages
+        replaced by a summary entry when the window was over budget.
+    """
+    total = sum(len(m["content"]) for m in messages)
+    if total <= budget_chars or len(messages) <= 2:
+        return messages
+
+    # Identify which messages would be dropped by the standard trim.
+    kept = list(messages)
+    dropped: list[dict] = []
+    while sum(len(m["content"]) for m in kept) > budget_chars and len(kept) > 2:
+        dropped.extend(kept[:2])
+        kept = kept[2:]
+
+    if not dropped:
+        return messages
+
+    # Summarise the dropped portion using the existing prompt.
+    from src.llm.prompts import SUMMARISE_SESSION_PROMPT
+
+    conv_text = "\n".join(
+        f"{m['role'].capitalize()}: {m['content']}" for m in dropped
+    )
+    prompt = SUMMARISE_SESSION_PROMPT.format(conversation=conv_text)
+    try:
+        summary = client.chat(
+            [{"role": "user", "content": prompt}], stream=False
+        ).strip()
+        summary_entry: dict = {
+            "role": "system",
+            "content": f"[Earlier context summary] {summary}",
+        }
+        _get_trim_log().info(
+            "compress_history: summarised %d dropped messages into context entry",
+            len(dropped),
+        )
+        return [summary_entry] + kept
+    except Exception as exc:
+        _get_trim_log().warning(
+            "compress_history: summarisation failed (%s) — falling back to trim", exc
+        )
+        return kept

@@ -283,7 +283,26 @@ def _patch_worker(
         _get_log().debug("patch_worker raw response (first 500): %s", raw[:500])
         patch = _extract_json_patch(raw)
         if patch:
-            _get_log().info("patch_worker applying patch: %s", patch)
+            # Strip metadata keys added by the updated SOUL_PATCH_PROMPT.
+            # Pop before apply_patch so they are never written to the soul file.
+            confidence: float = float(patch.pop("_confidence", 1.0))
+            explicit: bool = bool(patch.pop("_explicit", True))
+
+            from src.memory.policy import CONFIDENCE_THRESHOLD
+            if confidence < CONFIDENCE_THRESHOLD and not explicit:
+                _get_log().info(
+                    "patch_worker: confidence %.2f below threshold and not explicit "
+                    "— skipping patch",
+                    confidence,
+                )
+                return
+
+            _get_log().info(
+                "patch_worker applying patch (conf=%.2f, explicit=%s): %s",
+                confidence,
+                explicit,
+                patch,
+            )
             soul.apply_patch(patch)
         else:
             _get_log().info("patch_worker: no new facts")

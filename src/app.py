@@ -25,6 +25,8 @@ from src.llm.client import OllamaClient, trim_history, OLLAMA_BASE_URL, DEFAULT_
 from src.llm.context import ContextBudget
 from src.llm.prompts import BASE_SYSTEM_PROMPT, get_time_section
 from src.memory.soul import SoulFile, maybe_update_soul, maybe_grow_curiosity, SOUL_UPDATE_EVERY, SOUL_CURIOSITY_EVERY
+from src.memory.policy import is_filler_message
+from src.memory.extractor import maybe_extract_memories, EXTRACT_EVERY
 from src.utils.log import ConversationLogger, get_logger, _DEFAULT_LOGS_DIR
 
 # ---------------------------------------------------------------------------
@@ -420,24 +422,39 @@ if user_input:
     # Show and record the user message
     with st.chat_message("user"):
         st.markdown(user_input)
-    st.session_state.conversation.append({"role": "user", "content": user_input})
+
+    # Relevance pre-filter: filler messages ("ok", "thanks", etc.) are shown
+    # but excluded from the history buffer so they don't waste context budget.
+    _is_filler = is_filler_message(user_input)
+
+    if not _is_filler:
+        st.session_state.conversation.append({"role": "user", "content": user_input})
     st.session_state.conv_logger.log_turn("user", user_input, model=st.session_state.selected_model)
 
-    # Trim history to stay within context budget before sending
+    # Trim history to stay within context budget before sending.
+    # For filler turns, pass the history without the new user message so the
+    # LLM still generates a reply with full context.
     trimmed = trim_history(
         list(st.session_state.conversation),
         budget_chars=BUDGET.history_budget_chars(),
+    )
+    # If it was filler, append the message only for this one LLM call.
+    history_for_llm = (
+        trimmed + [{"role": "user", "content": user_input}]
+        if _is_filler
+        else trimmed
     )
     st.session_state.context_trimmed = len(trimmed) < len(st.session_state.conversation)
 
     # Stream the assistant response into a chat bubble
     with st.chat_message("assistant"):
-        response_text = st.write_stream(token_stream(client, trimmed))
+        response_text = st.write_stream(token_stream(client, history_for_llm))
 
-    # Persist the full response into session state
-    st.session_state.conversation.append(
-        {"role": "assistant", "content": response_text}
-    )
+    # Persist the full response into session state (skip filler exchanges)
+    if not _is_filler:
+        st.session_state.conversation.append(
+            {"role": "assistant", "content": response_text}
+        )
     st.session_state.conv_logger.log_turn(
         "assistant", response_text, model=st.session_state.selected_model
     )
@@ -453,6 +470,13 @@ if user_input:
         )
     if st.session_state.message_count % SOUL_CURIOSITY_EVERY == 0:
         maybe_grow_curiosity(
+            soul,
+            st.session_state.conversation,
+            st.session_state.selected_model,
+            OLLAMA_BASE_URL,
+        )
+    if st.session_state.message_count % EXTRACT_EVERY == 0 and not _is_filler:
+        maybe_extract_memories(
             soul,
             st.session_state.conversation,
             st.session_state.selected_model,

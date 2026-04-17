@@ -62,6 +62,16 @@ Worked example — if Daniel says "my mom is Janine, my dad is Chester, my step-
 {{"user": {{"family": {{"mother": "Janine", "father": "Chester", "step_father": "Randy", "brothers": ["Mason", "Quinn", "Emerson"], "notes": "Chester and Randy are best friends; both raised Daniel together"}} }}, "identity": {{"personality_notes": {{"family_warmth": "moved by how Daniel describes his close-knit blended family"}} }} }}
 ```
 
+CONFIDENCE AND EXPLICITNESS — include these top-level metadata keys in every patch you output:
+- "_confidence": float 0.0–1.0 — your certainty that the fact is accurate and durable.
+  Use 1.0 for things the user stated directly; lower values for inferences.
+- "_explicit": true if the user directly stated the fact; false if you inferred it.
+
+Example with metadata:
+```json
+{{"_confidence": 0.95, "_explicit": true, "user": {{"family": {{"mother": "Janine"}} }} }}
+```
+
 If you found new permanent facts, output ONLY a JSON block inside triple backticks like the example above.
 If nothing new was learned, output absolutely nothing — no explanation, no acknowledgement."""
 
@@ -101,6 +111,31 @@ Conversation:
 {conversation}
 
 Write only the summary paragraph, nothing else."""
+
+
+MEMORY_EXTRACT_PROMPT = """You are a fact-extraction assistant. Read the following message and identify any
+durable factual claims — things that would still be true next month.
+
+Message:
+{message}
+
+For each fact found, output it as an object in a JSON list. Include:
+- "fact": a concise plain-English statement (one sentence)
+- "category": one of user_preferences | biographical_facts | relationships | domain_expertise | project_context
+- "confidence": your certainty as a float 0.0–1.0 (1.0 = user stated it directly, 0.5 = inferred)
+- "explicit": true if the user stated it directly, false if you inferred it
+
+Output ONLY a JSON block like this:
+```json
+{{"candidates": [
+  {{"fact": "Daniel prefers concise answers", "category": "user_preferences", "confidence": 0.95, "explicit": true}},
+  {{"fact": "Daniel works as a nurse", "category": "biographical_facts", "confidence": 0.9, "explicit": true}}
+]}}
+```
+If there are no durable facts, output:
+```json
+{{"candidates": []}}
+```"""
 
 
 # ---------------------------------------------------------------------------
