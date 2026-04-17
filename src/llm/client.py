@@ -16,7 +16,7 @@ import requests
 from src.llm.prompts import BASE_SYSTEM_PROMPT
 
 OLLAMA_BASE_URL = "http://localhost:11434"
-DEFAULT_MODEL = "phi4-mini"
+DEFAULT_MODEL = "phi4-mini:latest"
 # Rough token budget before trimming oldest messages (1 token ≈ 4 chars)
 DEFAULT_CONTEXT_LIMIT = 4096
 

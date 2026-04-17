@@ -8,10 +8,12 @@ Talks to a locally running Ollama server. Reuses OllamaClient from
 src/llm/client.py — no API logic is duplicated here.
 """
 
+import base64
 import json
 import sys
 import os
 from collections.abc import Generator
+from pathlib import Path
 
 import requests
 import streamlit as st
@@ -29,9 +31,13 @@ from src.utils.log import ConversationLogger, get_logger, _DEFAULT_LOGS_DIR
 # Constants
 # ---------------------------------------------------------------------------
 
-PAGE_TITLE = "Personal Robot Chat"
-BUDGET = ContextBudget()  # defaults: 4096 tokens, 512 reserve
+PAGE_TITLE = "Orion"
+BUDGET = ContextBudget()  # defaults: 8192 tokens, 512 reserve
 _LOGS_DIR = _DEFAULT_LOGS_DIR
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_BG_PATH = _REPO_ROOT / "images" / "background_space.jpg"
+_BG_B64 = base64.b64encode(_BG_PATH.read_bytes()).decode() if _BG_PATH.exists() else ""
 
 # Ensure the memory log stub exists so the tab is ready for Phase 2.
 get_logger("memory")
@@ -90,7 +96,81 @@ def token_stream(client: OllamaClient, messages: list[dict]) -> Generator[str, N
 # Page config (must be the first Streamlit call)
 # ---------------------------------------------------------------------------
 
-st.set_page_config(page_title=PAGE_TITLE, page_icon="🤖", layout="wide")
+st.set_page_config(page_title=PAGE_TITLE, page_icon="⭐", layout="wide")
+
+# ---------------------------------------------------------------------------
+# Custom styling
+# ---------------------------------------------------------------------------
+
+st.markdown(
+    """
+    <style>
+    /* Hide Streamlit default chrome */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+
+    /* Subtle sidebar right border */
+    section[data-testid="stSidebar"] {
+        border-right: 1px solid rgba(74, 144, 217, 0.25);
+    }
+
+    /* Orion identity pill used in sidebar header */
+    .orion-pill {
+        display: inline-block;
+        background: linear-gradient(90deg, #1a3a5c 0%, #2d6a9f 100%);
+        color: #e8f4fd !important;
+        padding: 3px 14px;
+        border-radius: 20px;
+        font-size: 0.7rem;
+        font-weight: 700;
+        letter-spacing: 1.5px;
+        text-transform: uppercase;
+        margin: 0 0 6px;
+    }
+
+    /* Empty/welcome screen */
+    .orion-welcome {
+        text-align: center;
+        padding: 60px 20px;
+        opacity: 0.7;
+    }
+    .orion-welcome .star { font-size: 3.5rem; line-height: 1; }
+    .orion-welcome h3 { margin: 14px 0 6px; font-size: 1.4rem; color: #e8f4fd; }
+    .orion-welcome p { font-size: 0.9rem; color: #b0cce8; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# Inject background image into the main content area (done separately so we can
+# use the runtime-computed base64 string — f-strings can't go inside triple-quote
+# CSS blocks cleanly when the string itself may be empty).
+if _BG_B64:
+    st.markdown(
+        f"""
+        <style>
+        /* Background image for the main chat area only (not the sidebar) */
+        .stMain {{
+            background-image: url("data:image/jpeg;base64,{_BG_B64}");
+            background-size: cover;
+            background-position: center;
+            background-attachment: fixed;
+            background-repeat: no-repeat;
+        }}
+        /* Darken chat message bubbles slightly for contrast against the space bg */
+        [data-testid="stChatMessage"] {{
+            background: rgba(10, 20, 40, 0.65);
+            border-radius: 10px;
+            backdrop-filter: blur(4px);
+        }}
+        /* Title + caption area overlay */
+        .stMain h1, .stMain p, .stMain .stCaption {{
+            text-shadow: 0 1px 6px rgba(0,0,0,0.8);
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # ---------------------------------------------------------------------------
 # Session state initialisation
@@ -119,7 +199,8 @@ if "conv_logger" not in st.session_state:
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
-    st.title("⚙️ Settings")
+    st.markdown('<p class="orion-pill">⭐&nbsp;&nbsp;Orion</p>', unsafe_allow_html=True)
+    st.subheader("⚙️ Settings")
 
     # --- Ollama status badge ---
     if check_ollama_available(OLLAMA_BASE_URL):
@@ -291,15 +372,30 @@ with st.sidebar:
 # Main chat area
 # ---------------------------------------------------------------------------
 
-st.title("🤖 Personal Robot Chat")
+st.markdown("# ⭐ Orion")
+st.caption("Your personal AI — running fully locally on your machine")
+st.divider()
 
 # Render existing conversation history
 for msg in st.session_state.conversation:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
+# Welcome screen when no conversation has started yet
+if not st.session_state.conversation:
+    st.markdown(
+        """
+        <div class="orion-welcome">
+            <div class="star">⭐</div>
+            <h3>Hello, I'm Orion</h3>
+            <p>Start a conversation below.<br>I'm running fully locally — no internet connection required.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 # Chat input
-user_input = st.chat_input("Type a message…")
+user_input = st.chat_input("Message Orion…")
 
 if user_input:
     # Build the client — compose system prompt with soul section and current time appended

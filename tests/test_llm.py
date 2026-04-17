@@ -4,7 +4,7 @@ Tests for the OllamaClient.
 Run with:
     .venv\\Scripts\\python.exe -m pytest tests/test_llm.py -v
 
-Requires Ollama to be running locally with phi4-mini pulled.
+Requires Ollama to be running locally with phi4 pulled.
 """
 
 import pytest
