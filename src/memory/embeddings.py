@@ -20,8 +20,16 @@ Design notes
 
 from __future__ import annotations
 
+import os
 import threading
 from typing import Optional
+
+# Suppress cosmetic warnings from Hugging Face Hub and transformers before
+# any model is loaded:
+#   - HF_HUB_DISABLE_IMPLICIT_TOKEN: hides the "unauthenticated requests" nag
+#   - TRANSFORMERS_VERBOSITY: hides the BertModel "LOAD REPORT / UNEXPECTED key"
+os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 # ---------------------------------------------------------------------------
 # Module-level constants

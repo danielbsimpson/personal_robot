@@ -74,7 +74,7 @@ class MemoryExtractor:
         from src.llm.prompts import MEMORY_EXTRACT_PROMPT
         from src.memory.soul import _extract_json_patch
 
-        prompt = MEMORY_EXTRACT_PROMPT.format(message=turn["content"])
+        prompt = MEMORY_EXTRACT_PROMPT.replace("{message}", turn["content"])
         try:
             client = OllamaClient(model=self.model, base_url=self.base_url)
             raw = client.chat([{"role": "user", "content": prompt}], stream=False)
@@ -109,50 +109,95 @@ class MemoryExtractor:
         soul: "SoulFile",
         soul_data: Optional[dict] = None,
         vector_store: Optional["MemoryStore"] = None,
+        facts_store: Optional[object] = None,
     ) -> None:
         """Run each candidate through ``should_store()`` and persist approved facts.
 
-        Facts passing the ``"long_term"`` gate are written to *vector_store* so
-        they can be retrieved via RAG in future sessions.  Facts rated
-        ``"short_term_only"`` are logged but not persisted.
+        Routing logic:
+        - Structured facts (biographical, preferences, work, etc.) that pass the
+          ``"long_term"`` gate are written to *facts_store* when provided.
+        - Episodic / contextual facts go to *vector_store*.
+        - Facts rated ``"short_term_only"`` are logged but not persisted.
 
         Args:
             candidates:   Output of ``extract_candidates()``.
             soul:         Live ``SoulFile`` instance for repeat-detection.
-            soul_data:    Pre-loaded soul dict (avoids a second file read if
-                          you already have it; falls back to ``soul.load()``).
-            vector_store: ``MemoryStore`` instance to write long-term facts into.
+            soul_data:    Pre-loaded soul dict (avoids a second file read).
+            vector_store: ``MemoryStore`` instance for episodic facts.
+            facts_store:  ``FactsStore`` instance for structured facts.
         """
         from src.memory.policy import should_store
+
+        # Structured categories that belong in the facts store
+        _STRUCTURED_CATEGORIES = frozenset(
+            {
+                "user_preferences",
+                "biographical_facts",
+                "domain_expertise",
+                "project_context",
+                "work",
+                "education",
+                "interests",
+                "skills",
+                "relationships",
+                "partner",
+                "travel",
+                "projects",
+                "general",
+            }
+        )
 
         store = soul_data if soul_data is not None else soul.load()
 
         for item in candidates:
             fact = item["fact"]
             confidence = item["confidence"]
+            category = item.get("category", "general")
             store_flag, reason = should_store(fact, store, confidence)
             _get_log().info(
                 "extractor: candidate=%r category=%s conf=%.2f explicit=%s "
                 "→ store=%s reason=%s",
                 fact,
-                item.get("category"),
+                category,
                 confidence,
                 item.get("explicit"),
                 store_flag,
                 reason,
             )
-            if store_flag and reason == "long_term" and vector_store is not None:
+
+            if not store_flag or reason != "long_term":
+                continue
+
+            # Route to facts store for structured categories
+            if facts_store is not None and category in _STRUCTURED_CATEGORIES:
+                try:
+                    facts_store.add_fact(
+                        fact,
+                        category=category,
+                        confidence=confidence,
+                        explicit=bool(item.get("explicit", False)),
+                        source="extractor",
+                    )
+                    _get_log().info("extractor: persisted to facts store — %r", fact)
+                except Exception as exc:
+                    _get_log().error(
+                        "extractor: failed to persist to facts store %r: %s", fact, exc
+                    )
+            elif vector_store is not None:
+                # Episodic / relational facts go to vector store
                 try:
                     vector_store.add_memory(
                         fact,
                         {
                             "source": "extractor",
-                            "category": item.get("category", "unknown"),
+                            "category": category,
                         },
                     )
                     _get_log().info("extractor: persisted to vector store — %r", fact)
                 except Exception as exc:
-                    _get_log().error("extractor: failed to persist %r: %s", fact, exc)
+                    _get_log().error(
+                        "extractor: failed to persist to vector store %r: %s", fact, exc
+                    )
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +210,7 @@ def _extract_worker(
     soul: "SoulFile",
     conversation_snapshot: list[dict],
     vector_store: Optional["MemoryStore"] = None,
+    facts_store: Optional[object] = None,
 ) -> None:
     """Worker executed in a daemon thread — extract facts from recent user turns."""
     log = _get_log()
@@ -194,7 +240,9 @@ def _extract_worker(
 
         log.info("extract_worker: %d candidate(s) found across %d turns",
                  len(all_candidates), len(user_turns))
-        extractor.commit(all_candidates, soul, vector_store=vector_store)
+        extractor.commit(
+            all_candidates, soul, vector_store=vector_store, facts_store=facts_store
+        )
 
     except Exception as exc:
         log.error("extract_worker error: %s", exc, exc_info=True)
@@ -211,6 +259,7 @@ def maybe_extract_memories(
     model: str,
     base_url: str = "http://localhost:11434",
     vector_store: Optional["MemoryStore"] = None,
+    facts_store: Optional[object] = None,
 ) -> None:
     """Spawn a daemon thread to extract and evaluate memory candidates.
 
@@ -222,12 +271,13 @@ def maybe_extract_memories(
         conversation: Current conversation history (will be snapshot-copied).
         model:        Ollama model tag to use for extraction.
         base_url:     Ollama server URL.
-        vector_store: ``MemoryStore`` instance for persisting long-term facts.
+        vector_store: ``MemoryStore`` instance for episodic facts.
+        facts_store:  ``FactsStore`` instance for structured facts.
     """
     extractor = MemoryExtractor(model=model, base_url=base_url)
     thread = threading.Thread(
         target=_extract_worker,
-        args=(extractor, soul, list(conversation), vector_store),
+        args=(extractor, soul, list(conversation), vector_store, facts_store),
         daemon=True,
     )
     thread.start()

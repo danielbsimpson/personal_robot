@@ -220,7 +220,7 @@ def compress_history(
     conv_text = "\n".join(
         f"{m['role'].capitalize()}: {m['content']}" for m in dropped
     )
-    prompt = SUMMARISE_SESSION_PROMPT.format(conversation=conv_text)
+    prompt = SUMMARISE_SESSION_PROMPT.replace("{conversation}", conv_text)
     try:
         summary = client.chat(
             [{"role": "user", "content": prompt}], stream=False

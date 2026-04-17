@@ -110,7 +110,7 @@ def summarise_session(
     from src.llm.client import OllamaClient
     from src.llm.prompts import SUMMARISE_SESSION_PROMPT
 
-    prompt = SUMMARISE_SESSION_PROMPT.format(conversation=conv_text)
+    prompt = SUMMARISE_SESSION_PROMPT.replace("{conversation}", conv_text)
     client = OllamaClient(model=model, base_url=base_url)
     summary = client.chat(
         [{"role": "user", "content": prompt}],

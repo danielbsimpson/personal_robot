@@ -281,9 +281,8 @@ def _patch_worker(
             f"{m['role'].capitalize()}: {m['content']}" for m in snippet
         )
 
-        prompt = SOUL_PATCH_PROMPT.format(
-            soul_yaml=soul.as_yaml_string(),
-            conversation=conv_text,
+        prompt = SOUL_PATCH_PROMPT.replace("{soul_yaml}", soul.as_yaml_string()).replace(
+            "{conversation}", conv_text
         )
 
         # Fresh OllamaClient per thread — requests.Session is not thread-safe to share
@@ -372,9 +371,8 @@ def _curiosity_worker(
             f"{m['role'].capitalize()}: {m['content']}" for m in snippet
         )
 
-        prompt = CURIOSITY_PROMPT.format(
-            soul_yaml=soul.as_yaml_string(),
-            conversation=conv_text,
+        prompt = CURIOSITY_PROMPT.replace("{soul_yaml}", soul.as_yaml_string()).replace(
+            "{conversation}", conv_text
         )
 
         worker_client = OllamaClient(model=model, base_url=base_url)
@@ -416,3 +414,169 @@ def maybe_grow_curiosity(
         daemon=True,
     )
     thread.start()
+
+
+# ---------------------------------------------------------------------------
+# Soul → FactsStore migration
+# ---------------------------------------------------------------------------
+
+# Keys that STAY in the soul file after migration.
+# Everything else in `user` and `partner` is moved to the facts store.
+_SOUL_USER_CORE: frozenset[str] = frozenset(
+    {"name", "preferred_name", "date_of_birth", "location"}
+)
+_SOUL_PARTNER_CORE: frozenset[str] = frozenset(
+    {"name", "preferred_name", "relationship"}
+)
+
+# `identity` and `environment` sections are kept in full — never migrated.
+
+
+def migrate_soul_to_facts(soul: SoulFile) -> int:
+    """Move non-core soul fields into the FactsStore and trim the soul file.
+
+    Only runs when there are fields outside the core sets.  Safe to call
+    multiple times — duplicate facts are silently skipped by FactsStore.
+
+    Returns the number of facts added to the store.
+    """
+    from src.memory.facts_store import FactsStore
+
+    data = soul.load()
+    if not data:
+        return 0
+
+    facts_store = FactsStore()
+    bulk: list[dict] = []
+
+    # --- user section ---
+    user = data.get("user")
+    if isinstance(user, dict):
+        non_core = {k: v for k, v in user.items() if k not in _SOUL_USER_CORE}
+        for key, value in non_core.items():
+            category = _user_key_to_category(key)
+            facts = _flatten_to_facts(key, value, "user", category)
+            bulk.extend(facts)
+        # Trim user to core keys
+        data["user"] = {k: v for k, v in user.items() if k in _SOUL_USER_CORE}
+
+    # --- partner section ---
+    partner = data.get("partner")
+    if isinstance(partner, dict):
+        non_core = {k: v for k, v in partner.items() if k not in _SOUL_PARTNER_CORE}
+        for key, value in non_core.items():
+            facts = _flatten_to_facts(key, value, "partner", "partner")
+            bulk.extend(facts)
+        # Trim partner to core keys
+        data["partner"] = {k: v for k, v in partner.items() if k in _SOUL_PARTNER_CORE}
+
+    # --- facts section (entire section moves) ---
+    facts_section = data.pop("facts", None)
+    if isinstance(facts_section, dict):
+        for key, value in facts_section.items():
+            items = _flatten_to_facts(key, value, "facts", "general")
+            bulk.extend(items)
+
+    added = facts_store.add_facts_bulk(bulk)
+
+    # Persist the trimmed soul file
+    soul.save(data)
+    _get_log().info(
+        "migrate_soul_to_facts: migrated %d facts, soul file trimmed", added
+    )
+    return added
+
+
+def _user_key_to_category(key: str) -> str:
+    """Map a soul user field key to a FactsStore category."""
+    _MAP = {
+        "profession": "work",
+        "education": "education",
+        "work_history_summary": "work",
+        "personal_projects_highlights": "projects",
+        "dungeons_and_dragons": "interests",
+        "preferences": "interests",
+        "travel": "travel",
+        "family": "relationships",
+        "email": "general",
+        "links": "general",
+        "skills": "skills",
+        "favorite_band": "interests",
+        "favorite_artist": "interests",
+        "sports": "interests",
+        "music_genres": "interests",
+        "pets": "general",
+        "teaching": "interests",
+    }
+    return _MAP.get(key, "general")
+
+
+def _flatten_to_facts(
+    key: str,
+    value: object,
+    section: str,
+    category: str,
+) -> list[dict]:
+    """Recursively flatten a YAML value into plain-English fact strings."""
+    facts: list[dict] = []
+    label = key.replace("_", " ")
+
+    if isinstance(value, str):
+        facts.append(
+            {
+                "fact": f"{label}: {value}",
+                "category": category,
+                "confidence": 1.0,
+                "explicit": True,
+                "source": f"migration:{section}",
+            }
+        )
+
+    elif isinstance(value, (int, float, bool)):
+        facts.append(
+            {
+                "fact": f"{label}: {value}",
+                "category": category,
+                "confidence": 1.0,
+                "explicit": True,
+                "source": f"migration:{section}",
+            }
+        )
+
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, str):
+                facts.append(
+                    {
+                        "fact": f"{label}: {item}",
+                        "category": category,
+                        "confidence": 1.0,
+                        "explicit": True,
+                        "source": f"migration:{section}",
+                    }
+                )
+            elif isinstance(item, dict):
+                # e.g. education entries, D&D campaign dicts
+                summary = "; ".join(
+                    f"{k}: {v}" for k, v in item.items() if isinstance(v, str)
+                )
+                if summary:
+                    facts.append(
+                        {
+                            "fact": f"{label} — {summary}",
+                            "category": category,
+                            "confidence": 1.0,
+                            "explicit": True,
+                            "source": f"migration:{section}",
+                        }
+                    )
+
+    elif isinstance(value, dict):
+        for sub_key, sub_val in value.items():
+            sub_label = sub_key.replace("_", " ")
+            sub_facts = _flatten_to_facts(
+                f"{label} — {sub_label}", sub_val, section, category
+            )
+            facts.extend(sub_facts)
+
+    return facts
