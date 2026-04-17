@@ -221,6 +221,19 @@ Teach Orion to detect and identify people he sees — greeting Daniel and Daniel
 - **Unknown face handling**: when an unrecognised face is detected, Orion asks who the person is and optionally enrolls them with their permission — the new encoding is saved to `data/faces/` and the soul file `user` section is updated
 - **Pi-compatible**: dlib and `face_recognition` build cleanly on Raspberry Pi OS 64-bit (aarch64) with a pre-compiled wheel; inference stays on CPU alongside the LLM GPU workload on the laptop
 
+### Phase 5.6 — Network Bridge (Laptop Brain / Pi Body)
+
+Run all AI inference on the laptop while the Raspberry Pi acts as a thin I/O client over local Wi-Fi — no heavy models on the Pi for this phase.
+
+- **Design**: laptop runs a [FastAPI](https://fastapi.tiangolo.com/) bridge server; Pi connects as a WebSocket/HTTP client, streams raw sensor data in, receives processed results and commands back
+- **Audio pipeline**: Pi captures raw PCM audio from USB microphone → streams 16 kHz chunks to laptop over WebSocket → laptop runs `faster-whisper` (GPU) with Silero VAD → transcribed text returned to Pi
+- **Vision pipeline**: Pi captures JPEG frames → HTTP POST to laptop `/vision` endpoint → laptop runs YOLO + optional VLM → returns a vision summary string
+- **LLM + memory**: transcribed text enters the full laptop-side pipeline (soul file, RAG, context budget, Ollama) → response streamed back to Pi token-by-token over WebSocket
+- **TTS on Pi**: laptop sends the final response text only; Pi synthesises speech locally with Piper TTS (avoids streaming large audio files over Wi-Fi)
+- **Motor commands**: if the LLM output includes a `tool_call` JSON block, the laptop embeds it in the final WebSocket message; Pi parses and executes it via `gpiozero`
+- **Service discovery**: Pi auto-discovers the laptop server using mDNS (`zeroconf`) — no hardcoded IP addresses; falls back to `ORION_SERVER_URL` environment variable
+- **Security**: a shared auth token (stored in `.env`) is sent as a Bearer header on every request so the server is not open to the entire LAN
+
 ### Phase 6 — Physical Robot (Raspberry Pi)
 
 Package everything as a self-contained robot with motors, running on a Raspberry Pi 5.
@@ -291,6 +304,8 @@ Package everything as a self-contained robot with motors, running on a Raspberry
 | Face recognition | [`face_recognition`](https://github.com/ageitgey/face_recognition) (dlib) | CPU-only, Pi-compatible, simple enrollment API |
 | Audio I/O | [sounddevice](https://python-sounddevice.readthedocs.io/) | Cross-platform microphone/speaker |
 | Motor control | [gpiozero](https://gpiozero.readthedocs.io/) | Raspberry Pi GPIO abstraction |
+| Network bridge | [FastAPI](https://fastapi.tiangolo.com/) + [uvicorn](https://www.uvicorn.org/) | Async HTTP + WebSocket server; laptop-to-Pi data channel (Phase 5.6) |
+| Service discovery | [zeroconf](https://github.com/python-zeroconf/python-zeroconf) | mDNS auto-discovery so Pi finds the laptop without a hardcoded IP (Phase 5.6) |
 | Language | Python 3.11 | Universal support across all libraries |
 
 ---
@@ -381,7 +396,8 @@ personal_robot/
 │   │   ├── __init__.py
 │   │   └── motors.py         # gpiozero motor control (Pi only)
 │   ├── app.py                # Streamlit chat UI
-│   └── main.py               # CLI conversation loop
+│   ├── main.py               # CLI conversation loop
+│   └── server.py             # FastAPI bridge server — laptop-side (Phase 5.6)
 ├── data/
 │   ├── logs/                     # All runtime logs (gitignored)
 │   │   ├── conversations/        # Per-session JSONL turn logs
@@ -393,7 +409,8 @@ personal_robot/
 ├── raspberry_pi/
 │   ├── README.md             # Pi-specific setup guide
 │   ├── setup.sh              # Pi setup script
-│   └── main_pi.py            # Lightweight Pi entry point
+│   ├── main_pi.py            # Lightweight Pi entry point (standalone, Phase 6)
+│   └── bridge_client.py      # Thin I/O client — connects to laptop server (Phase 5.6)
 └── tests/
     ├── test_llm.py
     ├── test_soul.py

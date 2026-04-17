@@ -487,6 +487,90 @@ Codify the go/no-go logic as a reusable utility so it can be called from both th
 
 ---
 
+## Phase 5.6 — Network Bridge (Laptop Brain / Pi Body)
+
+**Goal**: Keep all AI inference on the laptop while the Raspberry Pi handles only physical I/O (microphone, camera, speaker, motors). The Pi streams raw sensor data to the laptop over local Wi-Fi; the laptop does all the heavy lifting and streams results back. This unlocks the full pipeline with real hardware before committing to fully standalone Pi inference (Phase 6).
+
+### 5.6.1 — Network Protocol Design
+
+- [ ] Choose FastAPI + WebSocket for the laptop bridge server: WebSocket for bidirectional streaming (audio chunks ↔ transcription, LLM tokens ↔ text); HTTP POST for one-shot vision frames; HTTP GET for health checks
+- [ ] Define the message schema for each channel:
+  - **Audio** (`WebSocket /audio`): Pi sends raw 16 kHz / 16-bit mono PCM chunks; laptop returns `{"text": "..."}` on VAD-triggered end-of-utterance
+  - **Vision** (`POST /vision`): Pi sends a JPEG body; laptop returns `{"summary": "..."}`
+  - **Chat** (`WebSocket /chat`): Pi sends `{"text": "...", "vision_summary": "..."|null}`; laptop streams `{"delta": "..."}` tokens; ends with `{"done": true, "tool_call": {...}|null}`
+  - **Health** (`GET /health`): returns `{"status": "ok", "model": "phi4-mini"}`
+- [ ] Document the full protocol schema in `raspberry_pi/README.md`
+
+### 5.6.2 — Laptop Bridge Server (`src/server.py`)
+
+- [ ] Add `fastapi`, `uvicorn[standard]`, and `websockets` to `requirements.txt`
+- [ ] Create `src/server.py` with a FastAPI app exposing all four endpoints above
+- [ ] `GET /health` — returns server status and active Ollama model name
+- [ ] `WebSocket /audio` — accumulates incoming PCM chunks; runs `Transcriber` with Silero VAD to detect end-of-speech; sends back the transcription event; handles silence and empty results gracefully
+- [ ] `POST /vision` — accepts a JPEG body up to a configurable max size; calls `get_vision_context()` (Phase 5); returns the vision summary JSON
+- [ ] `WebSocket /chat` — accepts the text + optional vision summary; runs the full laptop pipeline (`SoulFile`, `MemoryStore`, `ContextBudget`, `OllamaClient`); streams delta tokens; sends a final message including any motor `tool_call` extracted from the response
+- [ ] Reuse existing modules (`OllamaClient`, `MemoryStore`, `SoulFile`, `ContextBudget`, `Transcriber`, vision pipeline) — no duplication of logic
+- [ ] Add a `--host` and `--port` CLI flag (defaults: `0.0.0.0:8765`)
+- [ ] Add a startup log message showing the server URL and active model
+- [ ] Add request body size limits; reject oversized vision frames with HTTP 413
+
+### 5.6.3 — Authentication & Configuration
+
+- [ ] Add `python-dotenv` to `requirements.txt` and `requirements_pi.txt`
+- [ ] Store a shared `ORION_AUTH_TOKEN` secret in `.env` (gitignored); load in `src/server.py` at startup
+- [ ] Bridge server validates `Authorization: Bearer <token>` on every WebSocket handshake and HTTP request; rejects with 401 if missing or wrong
+- [ ] Create `raspberry_pi/.env.example` with placeholder values for `ORION_SERVER_URL`, `ORION_AUTH_TOKEN`, and `VISION_INTERVAL`
+- [ ] Pi bridge client reads token from its own `.env` (or `ORION_AUTH_TOKEN` environment variable)
+
+### 5.6.4 — mDNS Service Discovery
+
+- [ ] Add `zeroconf` to `requirements.txt` and `requirements_pi.txt`
+- [ ] On server start, register a `_orion._tcp.local.` mDNS service record so the Pi can find the laptop by name without a hardcoded IP
+- [ ] Write a `discover_server(timeout_s: float = 5.0) -> str | None` helper in `raspberry_pi/bridge_client.py` that queries mDNS for `_orion._tcp.local.` and returns the resolved `host:port`; returns `None` on timeout so the caller can fall back to `ORION_SERVER_URL`
+- [ ] Test mDNS resolution from a second laptop before deploying to Pi
+
+### 5.6.5 — Pi Bridge Client (`raspberry_pi/bridge_client.py`)
+
+- [ ] Create `raspberry_pi/bridge_client.py` as the single entry point for hybrid mode; add a `--server` flag to override mDNS discovery with a hardcoded URL for debugging
+- [ ] **Audio loop**: `sounddevice` captures 16 kHz PCM chunks → sends over `/audio` WebSocket → on `{"text": "..."}` received, opens `/chat` WebSocket with the transcribed text + latest cached vision summary
+- [ ] **Chat loop**: receives streamed `delta` tokens → accumulates sentences → calls `Speaker.speak(sentence)` at each sentence boundary for low-latency playback; on `{"done": true}` message, extracts and executes any `tool_call` via `MotorController`
+- [ ] **Vision loop**: background thread captures a frame every `VISION_INTERVAL` seconds (default 10 s) → HTTP POSTs to `/vision` → stores the returned summary in a thread-safe variable; latest cached summary is attached to every `/chat` request
+- [ ] Graceful reconnect on WebSocket disconnect: exponential back-off starting at 1 s, capped at 30 s; log each attempt
+- [ ] Skip motor execution silently if `gpiozero` is not installed (allows testing on non-Pi hardware)
+
+### 5.6.6 — Audio Streaming Details
+
+- [ ] Chunk size: 512 samples at 16 kHz = ~32 ms per chunk — keeps latency low while giving the server enough audio to run VAD
+- [ ] Server accumulates chunks in a buffer until Silero VAD signals end-of-speech; transcribes the full buffer in one Whisper call
+- [ ] Handle the case where VAD never fires (continuous background noise): flush and transcribe after a configurable `MAX_AUDIO_BUFFER_SECONDS = 30` timeout
+- [ ] Return an empty `{"text": ""}` response (not an error) when transcription produces only whitespace; Pi discards empty transcriptions and does not open a `/chat` connection
+
+### 5.6.7 — Motor Command Relay
+
+- [ ] Server embeds a `tool_call` object in the final `/chat` message when the LLM response contains a movement command block:
+  ```json
+  {"done": true, "text": "Moving forward now!", "tool_call": {"name": "move", "direction": "forward", "duration_seconds": 2.0}}
+  ```
+- [ ] `tool_call` schema: `direction` must be one of `forward | backward | left | right | stop`; `duration_seconds` must be a positive float ≤ 10
+- [ ] Server validates the schema before embedding; logs an error and omits `tool_call` on invalid LLM output rather than forwarding a malformed command
+- [ ] Pi bridge client executes the command only after the full TTS sentence queue is cleared, so speech and movement do not start simultaneously
+
+### 5.6.8 — Integration Tests & Simulation
+
+- [ ] Write `tests/test_bridge.py` with the FastAPI `TestClient` and mocked `Transcriber`, `OllamaClient`, and vision pipeline; assert correct response shapes for all four endpoints
+- [ ] Create `scripts/simulate_pi.py` — a laptop-based simulation script that connects to the local bridge server, sends a hardcoded transcript over `/chat`, and prints the streamed delta tokens to the console; useful for end-to-end smoke testing before Pi hardware is ready
+- [ ] Add a `run_server` pytest fixture that starts the FastAPI app with `uvicorn` in a background thread for integration tests; tears down after each test module
+
+### 5.6.9 — Documentation Update
+
+- [ ] Update `raspberry_pi/README.md` with a "Hybrid Mode (Phase 5.6)" section covering:
+  - How to start the bridge server on the laptop: `python src/server.py`
+  - How to start the bridge client on the Pi: `python bridge_client.py`
+  - Environment variable reference
+  - Troubleshooting: mDNS not resolving, auth token mismatch, audio device selection
+
+---
+
 ## Phase 6 — Physical Robot (Raspberry Pi)
 
 **Goal**: Run a lightweight version of the entire pipeline on a Raspberry Pi 5 with physical motor control.
