@@ -289,13 +289,13 @@ Codify the go/no-go logic as a reusable utility so it can be called from both th
 
 ### 1.95.4 — Two-Pass Extraction Architecture
 
-- [ ] Implement a **two-pass approach** for memory extraction: the main `OllamaClient` handles the conversation; a separate lightweight extraction call at the end of each turn (or configurable every N turns) decides what to commit to memory
-- [ ] Create `src/memory/extractor.py` with an `MemoryExtractor` class:
-  - `extract_candidates(turn: dict) -> list[dict]` — sends a short extraction prompt to the LLM, returns a list of `{fact, category, confidence, explicit}` objects
-  - `commit(candidates: list[dict], soul: SoulFile, memory_store)` — runs each candidate through `should_store()` and writes the approved ones
-- [ ] The extraction prompt is kept separate from the main system prompt so it does not contaminate the conversational flow — add `MEMORY_EXTRACT_PROMPT` to `src/llm/prompts.py`
-- [ ] Run extraction as a daemon thread (mirroring the existing `_patch_worker` pattern) so it never blocks the response path
-- [ ] Log each extraction decision (candidate, decision, reason) to `data/logs/memory.log` (the stub created in Phase 1.8.5)
+- [x] Implement a **two-pass approach** for memory extraction: the main `OllamaClient` handles the conversation; a separate lightweight extraction call fires every `EXTRACT_EVERY = 5` turns (deliberately offset from `SOUL_UPDATE_EVERY = 3`) to decide what to commit to memory
+- [x] Create `src/memory/extractor.py` with a `MemoryExtractor` class:
+  - `extract_candidates(turn: dict) -> list[dict]` — sends `MEMORY_EXTRACT_PROMPT` to the LLM, returns a list of `{fact, category, confidence, explicit}` objects
+  - `commit(candidates: list[dict], soul: SoulFile, memory_store)` — runs each candidate through `should_store()` and logs decisions to `data/logs/memory.log`
+- [x] `MEMORY_EXTRACT_PROMPT` added to `src/llm/prompts.py`
+- [x] Runs as daemon thread via `maybe_extract_memories()` — wired into `app.py`; never blocks the response path
+- [x] Each extraction decision (candidate, decision, reason) logged to `data/logs/memory.log` via `get_logger("memory")`
 
 ---
 
