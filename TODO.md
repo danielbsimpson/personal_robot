@@ -340,6 +340,96 @@ Codify the go/no-go logic as a reusable utility so it can be called from both th
 
 ---
 
+## Phase 2.5 — Memory Consolidation & Trust Layer
+
+**Goal**: Elevate the flat session-summary RAG store (Phase 2) into a trust-calibrated, claim-first memory system inspired by [consolidation-memory](https://github.com/charliee1w/consolidation-memory) and mem0 v3. Raw session summaries remain as episodic evidence; a periodic consolidation step extracts durable, structured *claims* from them. Claims track provenance, temporal validity, contradictions, and confidence so retrieval is trust-aware rather than purely recency-biased.
+
+**Architecture distinction**:
+- **Episodes** (Phase 2) = raw session summaries in ChromaDB — wide, messy, time-ordered
+- **Claims** (this phase) = deduplicated, LLM-extracted facts in SQLite — compact, trust-scored, contradiction-aware
+- Both layers are queried at retrieval time; claims are injected first as `## Long-Term Knowledge`, episodes as `## Relevant Memory`
+
+### 2.5.1 — Claims Store (`src/memory/claims.py`)
+
+- [ ] Create `data/memory/claims.db` (SQLite) with a `claims` table: `id` (SHA-256 of normalised text), `text`, `category`, `confidence` (float), `valid_from` (ISO datetime), `valid_until` (nullable), `source_episode_ids` (JSON list), `reinforcement_count` (int), `last_reinforced_at`, `contradicted_by` (nullable claim id), `created_at`
+- [ ] Add a `claim_events` table for the audit trail: `id`, `claim_id`, `event_type` (`created | reinforced | contradicted | expired | protected`), `detail` (JSON), `ts`
+- [ ] Implement `ClaimsStore` class with:
+  - `add_claim(text, category, confidence, valid_from, source_ids) -> str` — inserts or reinforces (idempotent by SHA-256)
+  - `reinforce_claim(claim_id)` — increments `reinforcement_count`, updates `last_reinforced_at`, logs a `reinforced` event
+  - `contradict_claim(claim_id, by_claim_id, detail)` — sets `contradicted_by`, logs a `contradicted` event; does not delete the claim
+  - `expire_claim(claim_id)` — sets `valid_until = now()`, logs an `expired` event
+  - `query_claims(text, n_results, threshold, as_of) -> list[dict]` — vector search via the existing `Embedder`, with optional temporal filter
+  - `decay_report(threshold_days) -> list[dict]` — returns claims where `last_reinforced_at` is older than the threshold and `valid_until` is null
+- [ ] ID is a SHA-256 hash of the lowercased, whitespace-normalised claim text so re-inserting the same fact is always an idempotent reinforce, never a duplicate
+- [ ] Write `tests/test_claims.py` — test add, idempotency, reinforce, contradict, expire, temporal `as_of` query, and decay report
+
+### 2.5.2 — Consolidation Engine (`src/memory/consolidation.py`)
+
+- [ ] Add `CONSOLIDATION_PROMPT` to `src/llm/prompts.py` — instructs the LLM to extract a JSON array of `{claim, category, confidence (0–1), valid_from, valid_until|null}` objects from a batch of episode summaries; emphasis on atomic, single-sentence, present-tense facts
+- [ ] Create `ConsolidationEngine` with:
+  - `consolidate(episode_texts: list[str], source_ids: list[str]) -> list[dict]` — sends the batch to the LLM, parses the JSON response, runs each candidate through `should_store()` (Phase 1.9b), and calls `ClaimsStore.add_claim()` for each approved candidate
+  - `run_if_due() -> int` — checks a `last_run_at` timestamp persisted in `claims.db`; runs consolidation only if `CONSOLIDATION_INTERVAL_HOURS = 6` have elapsed *and* at least `MIN_EPISODES_TO_CONSOLIDATE = 3` new summaries have been added since the last run; returns the number of claims written
+- [ ] On each consolidation run, log: episodes processed, claims extracted, claims reinforced, claims rejected (and reason) to `data/logs/memory.log`
+- [ ] Runs as a daemon thread (non-blocking) spawned at conversation end — same pattern as `_patch_worker` in `soul.py`
+
+### 2.5.3 — Contradiction Detection
+
+- [ ] Before inserting a new claim, call `ClaimsStore.query_claims()` to find semantically similar existing claims (cosine > 0.85)
+- [ ] For each near-match, send both claims to the LLM with a `CONTRADICTION_CHECK_PROMPT`: returns one of `agree | conflict | independent`
+  - `agree` → call `reinforce_claim()` on the existing one; do not insert a duplicate
+  - `conflict` → call `contradict_claim()` on the lower-confidence claim; log both to `data/logs/memory.log` with a `[CONTRADICTION]` prefix; keep both in the store so the event is auditable
+  - `independent` → insert the new claim normally
+- [ ] Add `CONTRADICTION_CHECK_PROMPT` to `src/llm/prompts.py`
+- [ ] Write tests for all three paths in `tests/test_claims.py` using a mocked LLM
+
+### 2.5.4 — Trust-Aware Retrieval & Hybrid Search
+
+- [ ] Extend `MemoryStore.query_memory()` with an optional `include_claims: bool = True` flag; when set, also queries `ClaimsStore` and merges results
+- [ ] Compute a trust score per claim: `confidence × log(1 + reinforcement_count) × recency_factor` where `recency_factor = exp(-days_since_reinforced / 30)` — claims not reinforced in 30 days decay to ~37% of face value
+- [ ] Add SQLite FTS5 over the `claims.text` column as a keyword-search fallback when vector similarity is below `VECTOR_THRESHOLD`; merge BM25 keyword candidates with vector candidates using a weighted sum
+- [ ] Inject retrieved claims into the `## Long-Term Knowledge` context section (separate from `## Relevant Memory` episode summaries); cap by `ContextBudget.rag_budget_chars()` — claims take priority over raw episode summaries when budget is tight
+- [ ] Add entity extraction to the retrieval query: pull named entities (person names, locations, project names) from the user message using a lightweight regex heuristic; boost claims containing those entity strings in the hybrid score
+
+### 2.5.5 — Memory Decay & Reinforcement Loop
+
+- [ ] On each consolidation run, call `decay_report(threshold_days=30)` and log all stale claims to `data/logs/memory.log` with a `[STALE]` tag — no automatic deletion; stale claims are preserved but scored lower at retrieval time
+- [ ] When a retrieved claim's text is semantically confirmed by an LLM response in the same turn (cosine similarity between claim and response > 0.8), call `reinforce_claim()` automatically — this keeps actively-used facts fresh without manual intervention
+- [ ] Add `DECAY_THRESHOLD_DAYS = 30` and `REINFORCEMENT_AUTO_THRESHOLD = 0.80` constants to `claims.py`
+
+### 2.5.6 — Memory Timeline
+
+- [ ] Implement `ClaimsStore.timeline(from_dt, to_dt) -> list[dict]` — returns all `claim_events` rows in the time window, joined with claim text, for audit/debug purposes
+- [ ] Expose as a "Timeline" tab in the Streamlit log viewer (Phase 1.8.6), showing the last 30 events with claim text, event type, and timestamp — useful for answering "what did Orion learn about me last week?"
+
+### 2.5.7 — Streamlit Memory Health Dashboard
+
+- [ ] Add a "🧠 Memory" section to the Streamlit sidebar (below the existing "🔮 Soul file" expander) showing:
+  - Episode count (ChromaDB documents)
+  - Claim count / stale claim count / contradicted claim count
+  - Last consolidation timestamp and how many claims were written
+  - A "Run consolidation now" button that triggers `ConsolidationEngine.run_if_due()` immediately (ignores the interval guard)
+- [ ] Update the "Memory" tab in the log viewer to include a timeline of recent claim events alongside the existing `memory.log` lines
+
+### 2.5.8 — Wire into Entry Points
+
+- [ ] `src/main.py`: at conversation end (in the `try/finally` block that already saves the session summary), fire `ConsolidationEngine.run_if_due()` as a daemon thread
+- [ ] `src/app.py`: same — trigger after `add_memory()` on "Clear conversation"; show updated claim count in sidebar after the run completes
+- [ ] Update `ContextBudget` to split the `rag_budget_chars()` allocation: 60% to claims (`## Long-Term Knowledge`), 40% to episode summaries (`## Relevant Memory`); add `claims_budget_chars()` and `episodes_budget_chars()` helper methods
+- [ ] Update `BASE_SYSTEM_PROMPT` in `prompts.py` to document the `## Long-Term Knowledge` section so the model knows how to prioritise it over raw episode recall
+
+### 2.5.9 — Test Coverage (`tests/test_consolidation.py`)
+
+- [ ] Test `ConsolidationEngine.consolidate()` with a mocked LLM: verify claims are extracted, passed through `should_store()`, and inserted into `ClaimsStore`
+- [ ] Test the idempotency path: calling `consolidate()` twice with the same episodes reinforces rather than duplicates
+- [ ] Test contradiction detection: two conflicting claims → lower-confidence one is marked `contradicted`
+- [ ] Test trust score ordering: a claim with `reinforcement_count=5` ranks above one with `reinforcement_count=1` for the same query
+- [ ] Test decay report: a claim with `last_reinforced_at` 31 days ago appears; one reinforced yesterday does not
+- [ ] Test FTS fallback: a keyword-only match (zero vector similarity) returns a result when FTS is enabled
+- [ ] Test `ContextBudget` split: claims consume 60% of RAG budget, episodes consume 40%
+- [ ] All tests use `tmp_path` fixtures and a mocked `OllamaClient` — no Ollama required to run
+
+---
+
 ## Phase 3 — Voice Input (Speech-to-Text)
 
 **Goal**: Replace the text input in the conversation loop with live microphone transcription.
