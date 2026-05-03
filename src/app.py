@@ -18,7 +18,7 @@ from pathlib import Path
 
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
+
 
 # Allow `src.*` imports when launched as `streamlit run src/app.py`
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -295,7 +295,7 @@ def chat_area() -> None:
 
         # Scroll to bottom as soon as the user message is visible so it doesn't
         # sit off-screen while Orion is thinking.
-        components.html(
+        st.html(
             """
             <script>
             (function() {
@@ -304,8 +304,7 @@ def chat_area() -> None:
                 if (el) el.scrollTop = el.scrollHeight;
             })();
             </script>
-            """,
-            height=0,
+            """
         )
 
         # Relevance pre-filter: filler messages ("ok", "thanks", etc.) are shown
@@ -462,7 +461,7 @@ def chat_area() -> None:
 
     # Scroll the chat area to the bottom after every fragment rerun so the
     # latest message is always visible without manual scrolling.
-    components.html(
+    st.html(
         """
         <script>
         (function() {
@@ -471,8 +470,7 @@ def chat_area() -> None:
             if (el) el.scrollTop = el.scrollHeight;
         })();
         </script>
-        """,
-        height=0,
+        """
     )
 
 
