@@ -14,8 +14,10 @@ import sys
 from src.llm.client import OllamaClient, trim_history, OLLAMA_BASE_URL
 from src.llm.context import ContextBudget
 from src.llm.prompts import BASE_SYSTEM_PROMPT, get_time_section
-from src.memory.soul import SoulFile, maybe_update_soul, maybe_grow_curiosity, SOUL_UPDATE_EVERY, SOUL_CURIOSITY_EVERY
+from src.memory.soul import SoulFile, maybe_update_soul, maybe_grow_curiosity, migrate_soul_to_facts, migrate_soul_to_claims, SOUL_UPDATE_EVERY, SOUL_CURIOSITY_EVERY
 from src.memory.vector_store import MemoryStore
+from src.memory.claims import ClaimsStore
+from src.memory.consolidation import ConsolidationEngine
 from src.memory.summariser import summarise_session
 from src.utils.log import ConversationLogger
 
@@ -66,6 +68,11 @@ def _save_session_summary(
 def main() -> None:
     print_banner()
 
+    # Run soul → facts and soul → claims migration once on startup
+    _soul_init = SoulFile()
+    migrate_soul_to_facts(_soul_init)
+    migrate_soul_to_claims(_soul_init)
+
     # Load soul file and inject into system prompt
     soul = SoulFile()
     soul_section = soul.to_prompt_section(budget_chars=BUDGET.soul_budget_chars())
@@ -92,6 +99,7 @@ def main() -> None:
     message_count = 0
     conv_logger = ConversationLogger(model=MODEL)
     memory_store = MemoryStore()
+    claims_store = ClaimsStore()
 
     try:
         while True:
@@ -108,11 +116,27 @@ def main() -> None:
             conversation.append({"role": "user", "content": user_text})
             conv_logger.log_turn("user", user_text)
 
+            current_system_prompt = system_prompt
+
+            # Claims injection — trust-calibrated long-term knowledge
+            claims_results = claims_store.query_claims(user_text, n_results=6)
+            if claims_results:
+                claims_budget = BUDGET.claims_budget_chars()
+                kept, total_chars = [], 0
+                for c in claims_results:
+                    entry = f"- {c['text']}"
+                    if total_chars + len(entry) + 1 > claims_budget:
+                        break
+                    kept.append(entry)
+                    total_chars += len(entry) + 1
+                if kept:
+                    claims_section = "## Long-Term Knowledge\n\n" + "\n".join(kept)
+                    current_system_prompt = f"{current_system_prompt}\n\n{claims_section}"
+
             # RAG injection — query long-term memory for context relevant to this message
             rag_results = memory_store.query_memory(user_text)
-            current_system_prompt = system_prompt
             if rag_results:
-                rag_budget = BUDGET.rag_budget_chars()
+                rag_budget = BUDGET.episodes_budget_chars()
                 kept, total_chars = [], 0
                 for result in rag_results:
                     entry = f"- {result}"
@@ -122,7 +146,7 @@ def main() -> None:
                     total_chars += len(entry) + 1
                 if kept:
                     rag_section = "## Relevant Memory\n\n" + "\n".join(kept)
-                    current_system_prompt = f"{system_prompt}\n\n{rag_section}"
+                    current_system_prompt = f"{current_system_prompt}\n\n{rag_section}"
 
             # Trim history to stay within context budget
             conversation = trim_history(
@@ -154,6 +178,14 @@ def main() -> None:
                 maybe_grow_curiosity(soul, conversation, MODEL, OLLAMA_BASE_URL)
     finally:
         _save_session_summary(conversation, memory_store)
+        # Run consolidation on session end (daemon thread, non-blocking)
+        engine = ConsolidationEngine(
+            claims_store=claims_store,
+            memory_store=memory_store,
+            model=MODEL,
+            base_url=OLLAMA_BASE_URL,
+        )
+        engine.run_async()
 
 
 if __name__ == "__main__":

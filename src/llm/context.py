@@ -111,6 +111,28 @@ class ContextBudget:
         """
         return self.rag_vision_budget_chars()
 
+    def claims_budget_chars(self) -> int:
+        """Character budget for trust-calibrated claims (## Long-Term Knowledge).
+
+        Phase 2.5: 40 % of the rag+vision budget is reserved for claims so
+        the most reliable long-term facts get priority context space.
+        """
+        return int(self.rag_vision_budget_chars() * 0.40)
+
+    def facts_budget_chars(self) -> int:
+        """Character budget for keyword-triggered structured facts (## Relevant Facts).
+
+        Phase 2.5: 30 % of the rag+vision budget.
+        """
+        return int(self.rag_vision_budget_chars() * 0.30)
+
+    def episodes_budget_chars(self) -> int:
+        """Character budget for session-summary episode memories (## Relevant Memory).
+
+        Phase 2.5: 30 % of the rag+vision budget.
+        """
+        return int(self.rag_vision_budget_chars() * 0.30)
+
     def misc_budget_chars(self) -> int:
         """Character budget for time/misc sections."""
         return int(self._usable_tokens() * self.misc_pct) * CHARS_PER_TOKEN

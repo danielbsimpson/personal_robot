@@ -95,26 +95,27 @@ def test_update_preserves_existing_keys(seeded_soul: SoulFile) -> None:
 # ---------------------------------------------------------------------------
 
 def test_apply_patch_merges_into_existing_section(seeded_soul: SoulFile) -> None:
-    seeded_soul.apply_patch({"user": {"hobby": "robotics"}})
+    seeded_soul.apply_patch({"identity": {"mood": "curious"}})
     data = seeded_soul.load()
-    assert data["user"]["hobby"] == "robotics"
-    assert data["user"]["name"] == "Daniel"  # existing key preserved
+    assert data["identity"]["mood"] == "curious"
+    assert data["identity"]["name"] == "Orion"  # existing key preserved
 
 
 def test_apply_patch_creates_new_section(soul: SoulFile) -> None:
-    soul.save({})
-    soul.apply_patch({"facts": {"favourite_food": "pizza"}})
-    assert soul.load()["facts"]["favourite_food"] == "pizza"
+    soul.save({"identity": {"name": "Orion"}})
+    soul.apply_patch({"identity": {"mood": "reflective"}})
+    assert soul.load()["identity"]["mood"] == "reflective"
 
 
 def test_apply_patch_with_multiple_sections(seeded_soul: SoulFile) -> None:
+    # Only identity writes are allowed; user/facts writes are silently ignored
     seeded_soul.apply_patch({
-        "user": {"job": "developer"},
-        "facts": {"city": "London"},
+        "identity": {"mood": "playful"},
+        "user": {"job": "developer"},  # should be silently dropped
     })
     data = seeded_soul.load()
-    assert data["user"]["job"] == "developer"
-    assert data["facts"]["city"] == "London"
+    assert data["identity"]["mood"] == "playful"
+    assert "job" not in data.get("user", {})  # user write was blocked
 
 
 def test_apply_patch_empty_patch_is_noop(seeded_soul: SoulFile) -> None:
@@ -188,76 +189,53 @@ def fat_soul(tmp_path: Path) -> SoulFile:
     return s
 
 
-def test_to_prompt_section_trim_level1_drops_facts(fat_soul: SoulFile) -> None:
-    """Level 1: when full text doesn't fit but text-without-facts does, facts are dropped."""
+def test_to_prompt_section_trim_level1_drops_capabilities_and_hardware(fat_soul: SoulFile) -> None:
+    """Level 1: capabilities and hardware are dropped first."""
     data = fat_soul.load()
-    l1_data = {k: v for k, v in data.items() if k != "facts"}
+    l1_data = {"identity": {k: v for k, v in data["identity"].items() if k not in {"capabilities", "hardware"}}}
     budget = len(_render_soul(l1_data))
     result = fat_soul.to_prompt_section(budget_chars=budget)
-    assert "pet:" not in result
-    assert "home office" in result  # environment still present
+    assert "capabilities:" not in result
 
 
-def test_to_prompt_section_trim_level2_drops_environment(fat_soul: SoulFile) -> None:
-    """Level 2: when level-1 still doesn't fit, environment is also dropped."""
+def test_to_prompt_section_trim_level2_drops_curiosity_queue(fat_soul: SoulFile) -> None:
+    """Level 2: curiosity_queue is dropped after capabilities/hardware."""
     data = fat_soul.load()
-    l2_data = {k: v for k, v in data.items() if k not in {"facts", "environment"}}
+    l2_data = {"identity": {k: v for k, v in data["identity"].items()
+               if k not in {"capabilities", "hardware", "curiosity_queue"}}}
     budget = len(_render_soul(l2_data))
     result = fat_soul.to_prompt_section(budget_chars=budget)
-    assert "home office" not in result
-    assert "hobbies:" in result  # extended user fields retained
+    assert "What is life?" not in result
 
 
-def test_to_prompt_section_trim_level3_reduces_user_to_core(fat_soul: SoulFile) -> None:
-    """Level 3: when level-2 still doesn't fit, user is trimmed to core fields."""
+def test_to_prompt_section_trim_level3_drops_personality_notes(fat_soul: SoulFile) -> None:
+    """Level 3: personality_notes are dropped after curiosity_queue."""
     data = fat_soul.load()
-    _USER_CORE = {"name", "preferred_name", "date_of_birth", "location"}
-    l2_data = {k: v for k, v in data.items() if k not in {"facts", "environment"}}
-    l3_data = dict(l2_data)
-    l3_data["user"] = {k: v for k, v in l3_data["user"].items() if k in _USER_CORE}
+    fat_soul2 = fat_soul  # reuse fixture
+    # Add personality_notes to the data and re-save
+    updated = fat_soul2.load()
+    updated["identity"]["personality_notes"] = {"note1": "loves cats"}
+    fat_soul2.save(updated)
+    data = fat_soul2.load()
+    l3_data = {"identity": {k: v for k, v in data["identity"].items()
+               if k not in {"capabilities", "hardware", "curiosity_queue", "personality_notes"}}}
     budget = len(_render_soul(l3_data))
-    result = fat_soul.to_prompt_section(budget_chars=budget)
-    assert "hobbies:" not in result
-    assert "job: engineer" not in result
-    assert "name: Daniel" in result      # core user field retained
-    assert "capabilities:" in result    # identity extended fields still present
+    result = fat_soul2.to_prompt_section(budget_chars=budget)
+    assert "loves cats" not in result
+    assert "name: Orion" in result  # core identity retained
 
 
-def test_to_prompt_section_trim_level4_reduces_identity_to_core(fat_soul: SoulFile) -> None:
-    """Level 4: when level-3 still doesn't fit, identity is trimmed to core fields."""
+def test_to_prompt_section_trim_level4_keeps_only_name_persona_style(fat_soul: SoulFile) -> None:
+    """Level 4: only name, persona, communication_style are retained."""
     data = fat_soul.load()
-    _USER_CORE = {"name", "preferred_name", "date_of_birth", "location"}
     _IDENTITY_CORE = {"name", "persona", "communication_style"}
-    l2_data = {k: v for k, v in data.items() if k not in {"facts", "environment"}}
-    l3_data = dict(l2_data)
-    l3_data["user"] = {k: v for k, v in l3_data["user"].items() if k in _USER_CORE}
-    l4_data = dict(l3_data)
-    l4_data["identity"] = {k: v for k, v in l4_data["identity"].items() if k in _IDENTITY_CORE}
+    l4_data = {"identity": {k: v for k, v in data["identity"].items() if k in _IDENTITY_CORE}}
     budget = len(_render_soul(l4_data))
     result = fat_soul.to_prompt_section(budget_chars=budget)
     assert "capabilities:" not in result
-    assert "hardware: RTX" not in result
-    assert "name: Orion" in result      # core identity field retained
-    assert "job: nurse" in result       # partner extended fields still present
-
-
-def test_to_prompt_section_trim_level5_reduces_partner_to_core(fat_soul: SoulFile) -> None:
-    """Level 5: when level-4 still doesn't fit, partner is trimmed to core fields."""
-    data = fat_soul.load()
-    _USER_CORE = {"name", "preferred_name", "date_of_birth", "location"}
-    _IDENTITY_CORE = {"name", "persona", "communication_style"}
-    _PARTNER_CORE = {"name", "preferred_name", "relationship"}
-    l2_data = {k: v for k, v in data.items() if k not in {"facts", "environment"}}
-    l3_data = dict(l2_data)
-    l3_data["user"] = {k: v for k, v in l3_data["user"].items() if k in _USER_CORE}
-    l4_data = dict(l3_data)
-    l4_data["identity"] = {k: v for k, v in l4_data["identity"].items() if k in _IDENTITY_CORE}
-    l5_data = dict(l4_data)
-    l5_data["partner"] = {k: v for k, v in l5_data["partner"].items() if k in _PARTNER_CORE}
-    budget = len(_render_soul(l5_data))
-    result = fat_soul.to_prompt_section(budget_chars=budget)
-    assert "job: nurse" not in result
-    assert "name: Danielle" in result   # core partner field retained
+    assert "What is life?" not in result
+    assert "name: Orion" in result
+    assert "persona:" in result
 
 
 # ---------------------------------------------------------------------------

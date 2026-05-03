@@ -222,3 +222,23 @@ class MemoryStore:
         """Return the number of memories currently stored."""
         self._ensure_initialized()
         return self._collection.count()
+
+    def get_all_memories(self) -> list[dict]:
+        """Return all stored memories as ``{id, text}`` dicts.
+
+        Used by :class:`~src.memory.consolidation.ConsolidationEngine` to
+        pull the full episode corpus for periodic claim extraction.
+        """
+        self._ensure_initialized()
+        with self._lock:
+            n = self._collection.count()
+            if n == 0:
+                return []
+            result = self._collection.get(include=["documents"])
+        docs = result.get("documents") or []
+        ids = result.get("ids") or []
+        return [
+            {"id": str(i), "text": str(d)}
+            for i, d in zip(ids, docs)
+            if d
+        ]

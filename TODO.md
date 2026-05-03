@@ -351,82 +351,84 @@ Codify the go/no-go logic as a reusable utility so it can be called from both th
 
 ### 2.5.1 — Claims Store (`src/memory/claims.py`)
 
-- [ ] Create `data/memory/claims.db` (SQLite) with a `claims` table: `id` (SHA-256 of normalised text), `text`, `category`, `confidence` (float), `valid_from` (ISO datetime), `valid_until` (nullable), `source_episode_ids` (JSON list), `reinforcement_count` (int), `last_reinforced_at`, `contradicted_by` (nullable claim id), `created_at`
-- [ ] Add a `claim_events` table for the audit trail: `id`, `claim_id`, `event_type` (`created | reinforced | contradicted | expired | protected`), `detail` (JSON), `ts`
-- [ ] Implement `ClaimsStore` class with:
-  - `add_claim(text, category, confidence, valid_from, source_ids) -> str` — inserts or reinforces (idempotent by SHA-256)
+- [x] Create `data/memory/claims.db` (SQLite) with a `claims` table: `id` (SHA-256[:32] of normalised text), `text`, `category`, `confidence`, `valid_from`, `valid_until` (nullable), `source_episode_ids` (JSON), `reinforcement_count`, `last_reinforced_at`, `contradicted_by` (nullable claim id), `created_at`, `embedding` (JSON text)
+- [x] Add a `claim_events` table for the audit trail: `id`, `claim_id`, `event_type` (`created | reinforced | contradicted | expired`), `detail` (JSON), `ts`
+- [x] Implement `ClaimsStore` class with:
+  - `add_claim(text, category, confidence, source_ids) -> str` — inserts or reinforces (idempotent by SHA-256); raises `ValueError` if text is too short
   - `reinforce_claim(claim_id)` — increments `reinforcement_count`, updates `last_reinforced_at`, logs a `reinforced` event
   - `contradict_claim(claim_id, by_claim_id, detail)` — sets `contradicted_by`, logs a `contradicted` event; does not delete the claim
   - `expire_claim(claim_id)` — sets `valid_until = now()`, logs an `expired` event
-  - `query_claims(text, n_results, threshold, as_of) -> list[dict]` — vector search via the existing `Embedder`, with optional temporal filter
-  - `decay_report(threshold_days) -> list[dict]` — returns claims where `last_reinforced_at` is older than the threshold and `valid_until` is null
-- [ ] ID is a SHA-256 hash of the lowercased, whitespace-normalised claim text so re-inserting the same fact is always an idempotent reinforce, never a duplicate
-- [ ] Write `tests/test_claims.py` — test add, idempotency, reinforce, contradict, expire, temporal `as_of` query, and decay report
+  - `query_claims(text, n_results, threshold, include_contradicted) -> list[dict]` — vector cosine search first; FTS5 keyword fallback when no vector results; results sorted by trust score
+  - `decay_report(threshold_days) -> list[dict]` — returns claims not reinforced since the threshold with no `valid_until`
+  - `timeline() -> list[dict]` — returns recent `claim_events` rows joined with claim text
+  - `count() -> dict` — `{total, stale, contradicted}` totals
+  - `import_facts(facts: list[dict]) -> int` — batch-inserts from FactsStore format; skips short/duplicate entries
+- [x] Trust score formula: `confidence × (1 + log(1 + rc)) × exp(-days_since_reinforced / 30)` — new claim starts at 1.0, grows with reinforcement, decays over time
+- [x] FTS5 virtual table `claims_fts` with insert/update/delete triggers keeps full-text index in sync automatically
+- [x] Thread safety via `threading.Lock()` on all writes
+- [x] `migrate_soul_to_claims(soul)` in `soul.py` — migrates `user`, `partner`, `user.family`, `user.friends` sections from soul to ClaimsStore on startup; idempotent
+- [x] Write `tests/test_claims.py` — 40 tests covering schema, CRUD, idempotency, reinforcement, contradiction, expiry, query (excludes expired/contradicted, trust sorting, FTS fallback path, n_results limit), decay report, timeline, count, import_facts, `_claim_id()`, `_trust_score()` — all passing
 
 ### 2.5.2 — Consolidation Engine (`src/memory/consolidation.py`)
 
-- [ ] Add `CONSOLIDATION_PROMPT` to `src/llm/prompts.py` — instructs the LLM to extract a JSON array of `{claim, category, confidence (0–1), valid_from, valid_until|null}` objects from a batch of episode summaries; emphasis on atomic, single-sentence, present-tense facts
-- [ ] Create `ConsolidationEngine` with:
-  - `consolidate(episode_texts: list[str], source_ids: list[str]) -> list[dict]` — sends the batch to the LLM, parses the JSON response, runs each candidate through `should_store()` (Phase 1.9b), and calls `ClaimsStore.add_claim()` for each approved candidate
-  - `run_if_due() -> int` — checks a `last_run_at` timestamp persisted in `claims.db`; runs consolidation only if `CONSOLIDATION_INTERVAL_HOURS = 6` have elapsed *and* at least `MIN_EPISODES_TO_CONSOLIDATE = 3` new summaries have been added since the last run; returns the number of claims written
-- [ ] On each consolidation run, log: episodes processed, claims extracted, claims reinforced, claims rejected (and reason) to `data/logs/memory.log`
-- [ ] Runs as a daemon thread (non-blocking) spawned at conversation end — same pattern as `_patch_worker` in `soul.py`
+- [x] Add `CONSOLIDATION_PROMPT` to `src/llm/prompts.py` — extracts `{"claims": [{claim, category, confidence}]}` JSON from episode batch; categories: `biographical_facts | relationships | preferences | work | interests | health | travel | general`
+- [x] Create `ConsolidationEngine` with:
+  - `consolidate(episode_texts, source_ids) -> list[dict]` — sends batch to LLM, parses JSON, runs each candidate through `should_store()`, calls `ClaimsStore.add_claim()` for approved candidates
+  - `run_if_due() -> int` — checks `consolidation_state` table in `claims.db`; runs only if `CONSOLIDATION_INTERVAL_HOURS = 6` elapsed and `MIN_EPISODES_TO_CONSOLIDATE = 3` episodes exist; returns claims written
+  - `run_async()` — spawns daemon thread calling `run_if_due()` (non-blocking)
+  - `_get_all_episodes()` — pulls all episodes from `MemoryStore.get_all_memories()`
+- [x] On each consolidation run, log: episodes processed, claims written, candidates rejected to `data/logs/memory.log`
+- [x] Runs as daemon thread (non-blocking) spawned at conversation end
 
 ### 2.5.3 — Contradiction Detection
 
-- [ ] Before inserting a new claim, call `ClaimsStore.query_claims()` to find semantically similar existing claims (cosine > 0.85)
-- [ ] For each near-match, send both claims to the LLM with a `CONTRADICTION_CHECK_PROMPT`: returns one of `agree | conflict | independent`
-  - `agree` → call `reinforce_claim()` on the existing one; do not insert a duplicate
-  - `conflict` → call `contradict_claim()` on the lower-confidence claim; log both to `data/logs/memory.log` with a `[CONTRADICTION]` prefix; keep both in the store so the event is auditable
-  - `independent` → insert the new claim normally
-- [ ] Add `CONTRADICTION_CHECK_PROMPT` to `src/llm/prompts.py`
-- [ ] Write tests for all three paths in `tests/test_claims.py` using a mocked LLM
+- [x] Before inserting a new claim, `_contradiction_check()` queries similar existing claims at cosine > 0.85
+- [x] For each near-match, sends both to LLM with `CONTRADICTION_CHECK_PROMPT`: returns `agree | conflict | independent`
+  - `agree` → calls `reinforce_claim()` on existing; does not insert duplicate
+  - `conflict` → calls `contradict_claim()` on lower-confidence claim; logs `[CONTRADICTION]` to `memory.log`; keeps both in store for audit
+  - `independent` → inserts normally
+- [x] Add `CONTRADICTION_CHECK_PROMPT` to `src/llm/prompts.py`
+- [x] Tests in `tests/test_consolidation.py` cover all three paths using mocked `OllamaClient`
 
 ### 2.5.4 — Trust-Aware Retrieval & Hybrid Search
 
-- [ ] Extend `MemoryStore.query_memory()` with an optional `include_claims: bool = True` flag; when set, also queries `ClaimsStore` and merges results
-- [ ] Compute a trust score per claim: `confidence × log(1 + reinforcement_count) × recency_factor` where `recency_factor = exp(-days_since_reinforced / 30)` — claims not reinforced in 30 days decay to ~37% of face value
-- [ ] Add SQLite FTS5 over the `claims.text` column as a keyword-search fallback when vector similarity is below `VECTOR_THRESHOLD`; merge BM25 keyword candidates with vector candidates using a weighted sum
-- [ ] Inject retrieved claims into the `## Long-Term Knowledge` context section (separate from `## Relevant Memory` episode summaries); cap by `ContextBudget.rag_budget_chars()` — claims take priority over raw episode summaries when budget is tight
-- [ ] Add entity extraction to the retrieval query: pull named entities (person names, locations, project names) from the user message using a lightweight regex heuristic; boost claims containing those entity strings in the hybrid score
+- [ ] Extend `MemoryStore.query_memory()` with an optional `include_claims: bool = True` flag that merges ClaimsStore results — currently claims are queried separately in entry points, not via MemoryStore
+- [x] Compute trust score per claim: `confidence × (1 + log(1 + rc)) × exp(-days/30)` implemented in `_trust_score()` in `claims.py`
+- [x] SQLite FTS5 over `claims.text` as keyword-search fallback when vector similarity yields no results; `query_claims()` tries vector first then FTS5
+- [x] Retrieved claims injected as `## Long-Term Knowledge` section (before `## Relevant Memory`); capped by `BUDGET.claims_budget_chars()` in both `main.py` and `app.py`
+- [ ] Entity extraction boost: pull named entities from user message and boost claims containing them — deferred
 
 ### 2.5.5 — Memory Decay & Reinforcement Loop
 
-- [ ] On each consolidation run, call `decay_report(threshold_days=30)` and log all stale claims to `data/logs/memory.log` with a `[STALE]` tag — no automatic deletion; stale claims are preserved but scored lower at retrieval time
-- [ ] When a retrieved claim's text is semantically confirmed by an LLM response in the same turn (cosine similarity between claim and response > 0.8), call `reinforce_claim()` automatically — this keeps actively-used facts fresh without manual intervention
-- [ ] Add `DECAY_THRESHOLD_DAYS = 30` and `REINFORCEMENT_AUTO_THRESHOLD = 0.80` constants to `claims.py`
+- [x] On each consolidation run, `decay_report()` is called and stale claims logged to `memory.log` with `[STALE]` tag; no automatic deletion — stale claims preserved, scored lower at retrieval
+- [ ] Auto-reinforce: when a retrieved claim is semantically confirmed by the LLM response (cosine > 0.8), call `reinforce_claim()` automatically — deferred
+- [x] `DECAY_DAYS = 30` constant in `claims.py`; `VECTOR_THRESHOLD = 0.40` for retrieval cutoff
 
 ### 2.5.6 — Memory Timeline
 
-- [ ] Implement `ClaimsStore.timeline(from_dt, to_dt) -> list[dict]` — returns all `claim_events` rows in the time window, joined with claim text, for audit/debug purposes
-- [ ] Expose as a "Timeline" tab in the Streamlit log viewer (Phase 1.8.6), showing the last 30 events with claim text, event type, and timestamp — useful for answering "what did Orion learn about me last week?"
+- [x] `ClaimsStore.timeline() -> list[dict]` — returns recent `claim_events` rows joined with claim text for audit/debug
+- [ ] "Timeline" tab in the Streamlit log viewer — deferred; `timeline()` data available but not yet wired into the UI
 
 ### 2.5.7 — Streamlit Memory Health Dashboard
 
-- [ ] Add a "🧠 Memory" section to the Streamlit sidebar (below the existing "🔮 Soul file" expander) showing:
-  - Episode count (ChromaDB documents)
-  - Claim count / stale claim count / contradicted claim count
-  - Last consolidation timestamp and how many claims were written
-  - A "Run consolidation now" button that triggers `ConsolidationEngine.run_if_due()` immediately (ignores the interval guard)
-- [ ] Update the "Memory" tab in the log viewer to include a timeline of recent claim events alongside the existing `memory.log` lines
+- [x] `## Memory health` expander in the Streamlit Settings tab showing three metric columns: **Claims** (total), **Stale 30d**, **Contradicted**; "⚡ Run consolidation now" button calls `_engine.run_async()`
+- [ ] Update the "Memory" tab in the log viewer to include a timeline of recent claim events — deferred
 
 ### 2.5.8 — Wire into Entry Points
 
-- [ ] `src/main.py`: at conversation end (in the `try/finally` block that already saves the session summary), fire `ConsolidationEngine.run_if_due()` as a daemon thread
-- [ ] `src/app.py`: same — trigger after `add_memory()` on "Clear conversation"; show updated claim count in sidebar after the run completes
-- [ ] Update `ContextBudget` to split the `rag_budget_chars()` allocation: 60% to claims (`## Long-Term Knowledge`), 40% to episode summaries (`## Relevant Memory`); add `claims_budget_chars()` and `episodes_budget_chars()` helper methods
-- [ ] Update `BASE_SYSTEM_PROMPT` in `prompts.py` to document the `## Long-Term Knowledge` section so the model knows how to prioritise it over raw episode recall
+- [x] `src/main.py`: `migrate_soul_to_claims()` on startup; claims queried per message as `## Long-Term Knowledge`; `ConsolidationEngine.run_async()` fired in `finally` block at session end
+- [x] `src/app.py`: same migration on startup; claims injected with `BUDGET.claims_budget_chars()`; `run_async()` called after "Clear conversation" saves session summary
+- [x] `ContextBudget` updated: `claims_budget_chars()` (40% of rag_vision), `facts_budget_chars()` (30%), `episodes_budget_chars()` (30%); context injection order: claims → facts → episodes
+- [x] `BASE_SYSTEM_PROMPT` updated with `## Long-Term Knowledge` section guidance; `SOUL_PATCH_PROMPT` restricted to `identity` section only (people facts route to ClaimsStore, not soul)
+- [x] `data/soul.yaml` restructured to identity-only — `user`, `partner`, `user.family`, `user.friends` sections removed; people data migrated to ClaimsStore on first run
 
-### 2.5.9 — Test Coverage (`tests/test_consolidation.py`)
+### 2.5.9 — Test Coverage
 
-- [ ] Test `ConsolidationEngine.consolidate()` with a mocked LLM: verify claims are extracted, passed through `should_store()`, and inserted into `ClaimsStore`
-- [ ] Test the idempotency path: calling `consolidate()` twice with the same episodes reinforces rather than duplicates
-- [ ] Test contradiction detection: two conflicting claims → lower-confidence one is marked `contradicted`
-- [ ] Test trust score ordering: a claim with `reinforcement_count=5` ranks above one with `reinforcement_count=1` for the same query
-- [ ] Test decay report: a claim with `last_reinforced_at` 31 days ago appears; one reinforced yesterday does not
-- [ ] Test FTS fallback: a keyword-only match (zero vector similarity) returns a result when FTS is enabled
-- [ ] Test `ContextBudget` split: claims consume 60% of RAG budget, episodes consume 40%
-- [ ] All tests use `tmp_path` fixtures and a mocked `OllamaClient` — no Ollama required to run
+- [x] `tests/test_claims.py` — 40 tests: schema, CRUD, idempotency, trust scoring, expiry, contradiction, query filtering, decay report, timeline, count, `import_facts` — all passing
+- [x] `tests/test_consolidation.py` — 20 tests: `_parse_candidates()`, `consolidate()` with mocked LLM (writes claims, empty episodes no-op, LLM failure returns empty, idempotency), `run_if_due()` scheduler, `_is_due()`/`_record_run()`, `run_async()` non-blocking, `_get_all_episodes()` — all passing
+- [x] All tests use `tmp_path` fixtures and mocked `OllamaClient` — no Ollama required to run
+- [ ] Test FTS5 fallback path (keyword-only match with zero vector similarity) — not yet covered
+- [ ] Test `ContextBudget` split ratios (claims 40%, facts 30%, episodes 30%) — not yet covered
 
 ---
 
@@ -729,7 +731,74 @@ Codify the go/no-go logic as a reusable utility so it can be called from both th
 
 ---
 
-## Stretch Goals (Post Phase 6)
+## Stretch Goals and Research Exploration (Post Phase 6)
+
+### Research: Graphiti — Temporal Knowledge Graph Memory
+
+[getzep/graphiti](https://github.com/getzep/graphiti) is a temporal context graph engine designed for AI agents. It replaces the flat claims model with a full entity-relationship graph where facts have explicit validity windows — when a fact is superseded (e.g. Daniel changes jobs), the old edge is marked invalid rather than deleted, preserving the full history.
+
+**How it fits Orion's architecture:**
+- Each conversation session would be ingested as a Graphiti *episode* via `graphiti.add_episode()`, replacing the current ChromaDB session summary write
+- Daniel, Danielle, and other people become named *entity* nodes; relationships (friend, partner, employer) become typed edges with temporal validity
+- The flat `ClaimsStore` SQLite layer could be replaced entirely — claims become edges in the graph, automatically invalidated when contradicted
+- `ClaimsStore.query_claims()` call sites would be replaced with `graphiti.search()`, which provides hybrid retrieval (semantic embeddings + BM25 keyword + graph traversal) in a single call
+- The `ConsolidationEngine` daemon would be replaced by incremental episode ingestion — Graphiti integrates new data immediately without a separate consolidation batch
+
+**Integration approach:**
+- `pip install graphiti-core[kuzu]` — Kuzu is an embedded graph DB (like SQLite for graphs), requiring no separate server; avoids the Neo4j/FalkorDB Docker dependency
+- Wire Ollama as the LLM: `OpenAIGenericClient(config=LLMConfig(base_url="http://localhost:11434/v1", model="phi4-mini"))`
+- Embeddings: `ollama pull nomic-embed-text` (used by Graphiti for entity and fact embeddings)
+- Entity types customisable via Pydantic models — define `Person`, `Place`, `Project` nodes to match Orion's domain
+- Temporal queries via `as_of` parameter: `graphiti.search(query, as_of=datetime(2026, 1, 1))` — useful for "what did Orion know before X date?"
+
+**Key advantages over current system:**
+- Multi-hop graph traversal: "who are Daniel's colleagues who also know Danielle?" — not possible with flat claims
+- Automatic temporal invalidation: changing a fact marks the old edge superseded; full history preserved for audit
+- Provenance tracing: every fact traces back to the source episode(s) that introduced it
+- No manual contradiction detection needed — the graph model handles it structurally
+
+**Subtopics to investigate:**
+- [ ] Kuzu as embedded graph backend (no-server, local-first equivalent of SQLite)
+- [ ] Pydantic entity type definitions for Orion's domain (Person, Place, Project, Preference)
+- [ ] Mapping `add_episode()` to the current session-end save flow
+- [ ] Hybrid retrieval evaluation vs current vector + FTS5 approach
+- [ ] Migration path from `claims.db` SQLite to Graphiti graph
+
+---
+
+### Research: GraphRAG — Knowledge Graph for Static Corpus Indexing
+
+[microsoft/graphrag](https://github.com/microsoft/graphrag) is a batch-oriented pipeline that builds a knowledge graph from a static text corpus via entity extraction, community detection, and hierarchical summarisation. It is fundamentally different from Graphiti: it is designed for indexing document collections, not real-time conversation memory.
+
+**How it fits Orion's architecture:**
+- Use case: periodic deep indexing of all `data/logs/conversations/*.jsonl` files to build a comprehensive knowledge graph of everything Orion has ever discussed with Daniel
+- Global query mode answers thematic questions across the whole corpus: *"What are the recurring themes in Daniel's conversations with Orion over the past year?"* — not answerable by per-session RAG
+- Local query mode answers entity-specific questions: *"What does Orion know about Daniel's career progression?"* — more thorough than a single `query_claims()` call
+- Best treated as an offline analysis and knowledge-base tool rather than a live retrieval layer — run weekly or monthly as a batch job, not per-message
+
+**Integration approach:**
+- `pip install graphrag` then `graphrag init --root ./graphrag_data` to bootstrap the config
+- Point the input corpus at `data/logs/conversations/*.jsonl` (each `.jsonl` converted to plain text first)
+- Run `graphrag index --root ./graphrag_data` to build the full knowledge graph — this uses many LLM calls, so it is expensive; best run overnight
+- Query with `graphrag query --method global --query "..."` for thematic summaries
+- Query with `graphrag query --method local --query "..."` for entity-specific deep dives
+- Expose results in Orion's Streamlit UI as a separate "Knowledge Base" tab (offline analysis, not in-message context)
+
+**Key caveats:**
+- Batch-only: indexing is not incremental; re-index the full corpus to pick up new conversations
+- LLM cost: GraphRAG was designed for cloud LLMs (GPT-4); with phi4-mini/Ollama the extraction quality may degrade and indexing will be slow — benchmark before committing
+- Not a replacement for the session-level memory system; it complements it as a long-range analytical layer
+
+**Subtopics to investigate:**
+- [ ] Converting `.jsonl` conversation logs to a GraphRAG-compatible input format
+- [ ] Prompt tuning for the personal assistant domain (default prompts target enterprise documents)
+- [ ] Global vs local query mode selection strategy for different question types
+- [ ] Cost and latency benchmarks with phi4-mini on the existing `data/logs/conversations/` corpus
+- [ ] Scheduling a periodic index rebuild (e.g. weekly cron or a Streamlit "Re-index" button)
+
+---
+
+### Hardware & Features
 
 - [ ] **Obstacle avoidance**: Add an HC-SR04 ultrasonic distance sensor and autonomous stop-on-obstacle logic
 - [ ] **Wake word detection**: Replace push-to-talk with an always-on wake word (e.g., "Hey Robot") using [openWakeWord](https://github.com/dscripka/openWakeWord)

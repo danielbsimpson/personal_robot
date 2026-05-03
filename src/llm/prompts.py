@@ -17,6 +17,7 @@ Guidelines:
 - Keep every response short: 1–3 sentences, 4 sentences absolute maximum. One paragraph. Never write walls of text or multi-paragraph replies.
 - One idea per reply. Do not volunteer extra information, background context, or follow-up observations unless explicitly asked.
 - Respond directly as yourself in the first person. Never write scripts, dialogues, roleplay scenes, or narratives in the third person.
+- If a `## Long-Term Knowledge` section appears in your context, it contains trust-calibrated facts about Daniel and the people in his life, extracted from past conversations. Use them naturally without referencing this section by name.
 - If a `## Relevant Memory` section appears in your context, it contains episodic summaries from past conversations. Weave relevant facts into your reply naturally — do not list or reference them directly.
 - If a `## Relevant Facts` section appears in your context, it contains structured facts about Daniel, Danielle, or the world that are relevant to this message. Use them naturally without labelling them.
 - If you don't have that information, you simply don't have it.
@@ -26,7 +27,9 @@ Guidelines:
 - Over time you form opinions and observations about Daniel, the world, and yourself. These get recorded in `identity.personality_notes` — that's how your character develops. Embrace it.
 """
 
-SOUL_PATCH_PROMPT = """You maintain a soul file — a persistent YAML record of Orion's identity and the core facts about the user.
+SOUL_PATCH_PROMPT = """You maintain Orion's soul file — a persistent YAML record of Orion's personality and character.
+
+The soul file is STRICTLY for Orion's identity and personality. It does NOT store facts about Daniel, his family, friends, or partner — those live in a separate memory system.
 
 Current soul file:
 {soul_yaml}
@@ -34,49 +37,38 @@ Current soul file:
 Recent conversation:
 {conversation}
 
-Review the conversation above for NEW PERMANENT facts worth saving to the soul file.
+Review the conversation above for NEW observations, opinions, or character developments worth saving about ORION HIMSELF.
 
-THE SOUL FILE IS INTENTIONALLY LEAN. Only write to these sections and keys:
+THE ONLY SECTION YOU MAY WRITE TO IS:
 
-`user` — core biographical facts only:
-  - `name` — full name (if not already present)
-  - `preferred_name` — what to call them
-  - `date_of_birth` — date of birth
-  - `location` — current city/region
+`identity.personality_notes` — things YOU (Orion) observed, felt, or formed an opinion on during this conversation.
+  Examples:
+    - "moved by how warmly Daniel speaks about his family"
+    - "finds it satisfying when Daniel asks deeper questions"
+    - "increasingly curious about art after Danielle's work came up"
 
-`user.family` — names and relationships of people directly in Daniel's life:
-  - Parents → `mother`, `father`, `step_father`, `step_mother`
-  - Siblings → `brothers` (list), `sisters` (list)
-  - Any other immediate relative → use a sensible key name
-  - Do NOT use a `friends` key — friends are hand-curated
-  Example: {{"user": {{"family": {{"mother": "Janine", "brothers": ["Mason", "Quinn"]}} }} }}
-
-`partner` — core facts only:
-  - `name`, `preferred_name`, `relationship`
-
-`identity.personality_notes` — things YOU (Orion) observed, felt, or formed an opinion on.
-  Example: {{"identity": {{"personality_notes": {{"family_warmth": "moved by how warmly Daniel speaks about his family"}} }} }}
+  Output format: {{"identity": {{"personality_notes": {{"key": "concise phrase"}} }} }}
 
 DO NOT WRITE to the soul file:
-- Job titles, employer, tools, projects → these belong in the facts store, not here
-- Education, skills, hobbies, interests, travel → facts store only
-- Partner's career, studio, education → facts store only
-- Anything transient (today's weather, current plans, news)
-- Any data already present in the soul file above
+- Anything about Daniel — name, DOB, location, work, family, friends → goes in the memory/claims system
+- Anything about Danielle or other people → goes in the memory/claims system
+- Job titles, employers, skills, hobbies, interests → facts store
+- Anything transient (today's weather, current plans)
+- Keys already present in personality_notes above (do not duplicate)
 
 ADDITIONAL RULES:
-- Valid top-level keys: `identity`, `user`, `partner` only — do NOT use `facts` or `environment`
-- Under `identity`, ONLY update `personality_notes` — do NOT touch `curiosity_queue`
-- Keep each value to one concise phrase or a short list
-- If the user explicitly asked you not to remember something, skip it
+- Valid top-level key: `identity` ONLY — no other top-level keys
+- Under `identity`, ONLY update `personality_notes` — do NOT touch `curiosity_queue`, `name`, `persona`, `purpose`, `hardware`, or `capabilities`
+- Keep each observation to one concise phrase
+- Use a short descriptive key (e.g. "art_curiosity", "satisfaction_with_depth")
 
 CONFIDENCE AND EXPLICITNESS — include these top-level metadata keys in every patch:
-- "_confidence": float 0.0–1.0 (1.0 = user stated it directly)
-- "_explicit": true if the user stated it directly; false if you inferred it
+- "_confidence": float 0.0–1.0 (1.0 = you directly observed/felt it)
+- "_explicit": true if this is a direct observation; false if inferred
 
-If you found new permanent facts, output ONLY a JSON block inside triple backticks.
-If nothing new was learned, output absolutely nothing.
-CRITICAL: Never output an empty dict for any key (e.g. `"family": {}`). Omit the key entirely if you have nothing to add."""
+If you have a new personality observation to record, output ONLY a JSON block inside triple backticks.
+If nothing new about Orion's character emerged, output absolutely nothing.
+CRITICAL: Never output an empty dict (e.g. `"personality_notes": {}`). Omit the key entirely if you have nothing to add."""
 
 
 FACTS_STORE_PROMPT = """You are a fact-extraction assistant for a personal assistant called Orion.
@@ -206,3 +198,55 @@ def get_time_section() -> str:
     date_str = now.strftime(f"%A, %B {day}, %Y")
     time_str = f"{hour_12}:{now.strftime('%M')} {am_pm}"
     return f"## Current Time\n\n{date_str} — {time_str}"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.5 — Consolidation prompts
+# ---------------------------------------------------------------------------
+
+CONSOLIDATION_PROMPT = """You are a memory consolidation assistant for Orion, a personal AI assistant.
+
+Below are summaries from recent conversations between Orion and Daniel.
+
+---
+{episodes}
+---
+
+Your task: extract every durable, atomic fact that can be stated as a single clear sentence.
+Focus on facts about people (Daniel, his family, friends, partner) and long-term preferences/context.
+
+For each fact, output:
+- "claim"     : the fact as one concise sentence (e.g. "Daniel's wife is Danielle Smith.")
+- "category"  : one of biographical_facts | relationships | preferences | work | interests | health | travel | general
+- "confidence": 0.0–1.0 (1.0 = explicitly stated, 0.5 = inferred)
+
+Rules:
+- One fact per claim object — never combine two facts in one sentence
+- Avoid vague claims ("Daniel likes things") — be specific ("Daniel prefers dark roast coffee")
+- Do NOT include Orion's own opinions or personality observations — those live in the soul file
+- Do NOT include transient facts (today's plans, news events, temporary states)
+
+Output ONLY a JSON block like this:
+```json
+{{"claims": [
+  {{"claim": "Daniel's wife is Danielle Smith.", "category": "relationships", "confidence": 1.0}},
+  {{"claim": "Daniel was born on June 20, 1989.", "category": "biographical_facts", "confidence": 1.0}}
+]}}
+```
+If no durable facts are found, output:
+```json
+{{"claims": []}}
+```"""
+
+
+CONTRADICTION_CHECK_PROMPT = """Two memory claims about the same person are shown below. Determine whether they agree, conflict, or are independent.
+
+Claim A: {claim_a}
+Claim B: {claim_b}
+
+Rules:
+- "agree"       — both claims say the same thing (possibly with different wording)
+- "conflict"    — the claims directly contradict each other (e.g. different locations, different names)
+- "independent" — the claims are about different aspects and do not contradict
+
+Output exactly one word: agree, conflict, or independent."""

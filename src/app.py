@@ -26,11 +26,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.llm.client import OllamaClient, trim_history, OLLAMA_BASE_URL, DEFAULT_MODEL
 from src.llm.context import ContextBudget
 from src.llm.prompts import BASE_SYSTEM_PROMPT, CURIOSITY_NUDGE, RESPONSE_CONSTRAINT, RESPONSE_REMINDER, get_time_section
-from src.memory.soul import SoulFile, maybe_update_soul, maybe_grow_curiosity, migrate_soul_to_facts, SOUL_UPDATE_EVERY, SOUL_CURIOSITY_EVERY
+from src.memory.soul import SoulFile, maybe_update_soul, maybe_grow_curiosity, migrate_soul_to_facts, migrate_soul_to_claims, SOUL_UPDATE_EVERY, SOUL_CURIOSITY_EVERY
 from src.memory.policy import is_filler_message
 from src.memory.extractor import maybe_extract_memories, EXTRACT_EVERY
 from src.memory.vector_store import MemoryStore
 from src.memory.facts_store import FactsStore
+from src.memory.claims import ClaimsStore
+from src.memory.consolidation import ConsolidationEngine
 from src.memory.summariser import summarise_session
 from src.utils.log import ConversationLogger, get_logger, _DEFAULT_LOGS_DIR
 
@@ -218,10 +220,14 @@ if "memory_store" not in st.session_state:
 if "facts_store" not in st.session_state:
     st.session_state.facts_store = FactsStore()
 
-# Run soul → facts migration once per session (no-op if already lean)
+if "claims_store" not in st.session_state:
+    st.session_state.claims_store = ClaimsStore()
+
+# Run soul → facts and soul → claims migration once per session
 if "soul_migrated" not in st.session_state:
     _migration_soul = SoulFile()
-    _migrated = migrate_soul_to_facts(_migration_soul)
+    migrate_soul_to_facts(_migration_soul)
+    migrate_soul_to_claims(_migration_soul)
     st.session_state.soul_migrated = True
 
 # ---------------------------------------------------------------------------
@@ -326,27 +332,29 @@ def chat_area() -> None:
                 if time_section:
                     combined_prompt = f"{combined_prompt}\n\n{time_section}"
 
-                # RAG injection — query long-term memory for context relevant to this message
+                # Context injection: claims → facts → episodes (claims first = highest trust)
                 if not _is_filler:
-                    rag_results = st.session_state.memory_store.query_memory(user_input)
-                    if rag_results:
-                        rag_budget = BUDGET.rag_budget_chars()
-                        kept, total_chars = [], 0
-                        for result in rag_results:
-                            entry = f"- {result}"
-                            if total_chars + len(entry) + 1 > rag_budget:
+                    # Claims injection — trust-calibrated long-term knowledge
+                    claims_results = st.session_state.claims_store.query_claims(
+                        user_input, n_results=8
+                    )
+                    if claims_results:
+                        claims_budget = BUDGET.claims_budget_chars()
+                        kept_claims, total_chars = [], 0
+                        for c in claims_results:
+                            entry = f"- {c['text']}"
+                            if total_chars + len(entry) + 1 > claims_budget:
                                 break
-                            kept.append(entry)
+                            kept_claims.append(entry)
                             total_chars += len(entry) + 1
-                        if kept:
-                            rag_section = "## Relevant Memory\n\n" + "\n".join(kept)
-                            combined_prompt = f"{combined_prompt}\n\n{rag_section}"
+                        if kept_claims:
+                            claims_section = "## Long-Term Knowledge\n\n" + "\n".join(kept_claims)
+                            combined_prompt = f"{combined_prompt}\n\n{claims_section}"
 
                     # Facts store injection — structured facts retrieved by keyword/category
                     facts_results = st.session_state.facts_store.query_facts(user_input)
                     if facts_results:
-                        # Share the rag+vision budget; facts are capped at half of it
-                        facts_budget = BUDGET.rag_budget_chars() // 2
+                        facts_budget = BUDGET.facts_budget_chars()
                         kept_facts, total_chars = [], 0
                         for fact in facts_results:
                             entry = f"- {fact}"
@@ -357,6 +365,21 @@ def chat_area() -> None:
                         if kept_facts:
                             facts_section = "## Relevant Facts\n\n" + "\n".join(kept_facts)
                             combined_prompt = f"{combined_prompt}\n\n{facts_section}"
+
+                    # RAG injection — episodic session summaries
+                    rag_results = st.session_state.memory_store.query_memory(user_input)
+                    if rag_results:
+                        rag_budget = BUDGET.episodes_budget_chars()
+                        kept, total_chars = [], 0
+                        for result in rag_results:
+                            entry = f"- {result}"
+                            if total_chars + len(entry) + 1 > rag_budget:
+                                break
+                            kept.append(entry)
+                            total_chars += len(entry) + 1
+                        if kept:
+                            rag_section = "## Relevant Memory\n\n" + "\n".join(kept)
+                            combined_prompt = f"{combined_prompt}\n\n{rag_section}"
 
                 # Inject curiosity nudge when the counter has reached the threshold
                 if _curiosity_active:
@@ -507,6 +530,14 @@ with tab_settings:
                         _summary,
                         {"source": "session_summary"},
                     )
+                # Trigger consolidation in the background after saving the summary
+                _engine = ConsolidationEngine(
+                    claims_store=st.session_state.claims_store,
+                    memory_store=st.session_state.memory_store,
+                    model=st.session_state.selected_model,
+                    base_url=OLLAMA_BASE_URL,
+                )
+                _engine.run_async()
             st.session_state.conversation = []
             st.session_state.message_count = 0
     with col_soul:
@@ -535,6 +566,27 @@ with tab_settings:
         soul_view = SoulFile()
         st.code(soul_view.as_yaml_string(), language="yaml")
         st.caption("Updated automatically during conversation. You can also edit `data/soul.yaml` directly.")
+
+    st.divider()
+
+    with st.expander("🧠 Memory health", expanded=False):
+        try:
+            _counts = st.session_state.claims_store.count()
+            col_a, col_b, col_c = st.columns(3)
+            col_a.metric("Claims", _counts["total"])
+            col_b.metric("Stale (30d)", _counts["stale"])
+            col_c.metric("Contradicted", _counts["contradicted"])
+        except Exception:
+            st.caption("Claims store unavailable.")
+        if st.button("⚡ Run consolidation now", use_container_width=True):
+            _eng = ConsolidationEngine(
+                claims_store=st.session_state.claims_store,
+                memory_store=st.session_state.memory_store,
+                model=st.session_state.selected_model,
+                base_url=OLLAMA_BASE_URL,
+            )
+            _eng.run_async()
+            st.toast("Consolidation triggered — new claims will appear shortly.", icon="🧠")
 
     st.divider()
 

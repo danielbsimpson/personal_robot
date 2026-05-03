@@ -142,14 +142,14 @@ class TestSoulAuditLog:
 
         soul_path = tmp_path / "soul.yaml"
         with soul_path.open("w") as f:
-            yaml.dump({"user": {"name": "Daniel"}}, f)
+            yaml.dump({"identity": {"name": "Orion"}}, f)
 
         soul = SoulFile(path=soul_path)
-        soul.apply_patch({"user": {"hobby": "cycling"}})
+        soul.apply_patch({"identity": {"mood": "curious"}})
 
         log_file = log_dir / "soul_changes.log"
         content = log_file.read_text(encoding="utf-8")
-        assert "user.hobby" in content
+        assert "identity.mood" in content
 
     def test_new_key_recorded_as_new(
         self, tmp_path: Path, log_dir: Path
@@ -161,7 +161,7 @@ class TestSoulAuditLog:
             yaml.dump({}, f)
 
         soul = SoulFile(path=soul_path)
-        soul.apply_patch({"facts": {"coffee": "prefers oat milk"}})
+        soul.apply_patch({"identity": {"mood": "reflective"}})
 
         log_file = log_dir / "soul_changes.log"
         content = log_file.read_text(encoding="utf-8")

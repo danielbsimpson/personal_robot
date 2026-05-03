@@ -118,20 +118,20 @@ def test_assemble_drops_vision_before_rag() -> None:
 # ---------------------------------------------------------------------------
 
 def test_to_prompt_section_drops_facts_first(tmp_path: Path) -> None:
-    """Level 1 trim: facts dropped before anything else."""
+    """Level 1 trim: capabilities/hardware dropped before other identity fields."""
     data = {
-        "identity": {"name": "Orion"},
-        "user": {"name": "Daniel"},
-        "facts": {"key": "value that should be dropped"},
+        "identity": {
+            "name": "Orion",
+            "persona": "warm robot",
+            "communication_style": "concise",
+            "capabilities": ["should be dropped"],
+        },
     }
     soul = SoulFile(path=tmp_path / "soul.yaml")
     soul.save(data)
 
-    # Get the full size then request a tiny budget that forces trimming
     full = soul.to_prompt_section()
-    # Budget just enough for identity+user, not facts
-    no_facts_size = len(soul.to_prompt_section(budget_chars=999_999))  # full
-    # Force level-1 trim by allowing only content minus facts
+    # Budget just enough to force Level-1 trim (drop capabilities)
     trimmed_text = soul.to_prompt_section(budget_chars=len(full) - 5)
 
     assert "should be dropped" not in trimmed_text

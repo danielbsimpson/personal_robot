@@ -89,14 +89,10 @@ class SoulFile:
 
         If *budget_chars* is set and the full YAML exceeds it, sections are
         progressively dropped in this priority order (least important first):
-          1. ``facts``
-          2. ``environment``
-          3. Extended ``user`` fields — keeps only name, preferred_name,
-             date_of_birth, location; drops everything else
-          4. ``identity`` non-essentials — keeps name, persona,
-             communication_style; drops capabilities, hardware, curiosity_queue
-
-        Each drop level is tried in sequence until the text fits.
+          1. ``identity.capabilities`` and ``identity.hardware``
+          2. ``identity.curiosity_queue``
+          3. ``identity.personality_notes``
+          4. Core identity only (name, persona, communication_style)
         """
         data = self.load()
         if not data:
@@ -112,53 +108,57 @@ class SoulFile:
         if budget_chars is None or len(text) <= budget_chars:
             return text
 
-        # --- Level 1: drop facts ---
-        trimmed = {k: v for k, v in data.items() if k != "facts"}
-        text = _render(trimmed)
-        if len(text) <= budget_chars:
-            _get_log().info("soul trimmed: dropped 'facts' section")
-            return text
-
-        # --- Level 2: drop environment ---
-        trimmed = {k: v for k, v in trimmed.items() if k != "environment"}
-        text = _render(trimmed)
-        if len(text) <= budget_chars:
-            _get_log().info("soul trimmed: dropped 'facts' and 'environment' sections")
-            return text
-
-        # --- Level 3: keep only core user fields ---
-        _USER_CORE = {"name", "preferred_name", "date_of_birth", "location"}
-        if "user" in trimmed and isinstance(trimmed["user"], dict):
-            trimmed["user"] = {
-                k: v for k, v in trimmed["user"].items() if k in _USER_CORE
-            }
-        text = _render(trimmed)
-        if len(text) <= budget_chars:
-            _get_log().info("soul trimmed: reduced user to core fields")
-            return text
-
-        # --- Level 4: keep only core identity fields ---
-        _IDENTITY_CORE = {"name", "persona", "communication_style"}
-        if "identity" in trimmed and isinstance(trimmed["identity"], dict):
+        # --- Level 1: drop capabilities and hardware (least useful for context) ---
+        identity = data.get("identity")
+        trimmed = dict(data)
+        if isinstance(identity, dict):
             trimmed["identity"] = {
-                k: v for k, v in trimmed["identity"].items() if k in _IDENTITY_CORE
+                k: v
+                for k, v in identity.items()
+                if k not in {"capabilities", "hardware"}
             }
         text = _render(trimmed)
         if len(text) <= budget_chars:
-            _get_log().info("soul trimmed: reduced identity to core fields")
+            _get_log().info("soul trimmed: dropped capabilities and hardware")
             return text
 
-        # --- Level 5: trim partner to core fields ---
-        _PARTNER_CORE = {"name", "preferred_name", "relationship"}
-        if "partner" in trimmed and isinstance(trimmed["partner"], dict):
-            trimmed["partner"] = {
-                k: v for k, v in trimmed["partner"].items() if k in _PARTNER_CORE
+        # --- Level 2: drop curiosity_queue ---
+        identity_l2 = trimmed.get("identity")
+        if isinstance(identity_l2, dict):
+            trimmed["identity"] = {
+                k: v for k, v in identity_l2.items() if k != "curiosity_queue"
             }
         text = _render(trimmed)
         if len(text) <= budget_chars:
-            _get_log().info("soul trimmed: reduced partner to core fields")
+            _get_log().info("soul trimmed: dropped curiosity_queue")
+            return text
+
+        # --- Level 3: drop personality_notes ---
+        identity_l3 = trimmed.get("identity")
+        if isinstance(identity_l3, dict):
+            trimmed["identity"] = {
+                k: v for k, v in identity_l3.items() if k != "personality_notes"
+            }
+        text = _render(trimmed)
+        if len(text) <= budget_chars:
+            _get_log().info("soul trimmed: dropped personality_notes")
+            return text
+
+        # --- Level 4: core identity only (name, persona, communication_style) ---
+        _IDENTITY_CORE = {"name", "persona", "communication_style"}
+        if "identity" in trimmed and isinstance(trimmed.get("identity"), dict):
+            trimmed["identity"] = {
+                k: v
+                for k, v in trimmed["identity"].items()
+                if k in _IDENTITY_CORE
+            }
+        text = _render(trimmed)
+        if len(text) > budget_chars:
+            _get_log().warning(
+                "soul still over budget after maximum trimming (%d chars)", len(text)
+            )
         else:
-            _get_log().warning("soul still over budget after maximum trimming (%d chars)", len(text))
+            _get_log().info("soul trimmed: core identity only")
         return text
 
     def update(self, section: str, key: str, value: object) -> None:
@@ -170,20 +170,44 @@ class SoulFile:
         self.save(data)
 
     def apply_patch(self, patch: dict) -> None:
-        """Merge a patch dict shaped {section: {key: value}} into the soul file."""
+        """Merge a patch dict shaped {section: {key: value}} into the soul file.
+
+        Phase 2.5 guard: only ``identity`` writes are permitted.  Any attempt
+        to write ``user``, ``partner``, ``user.family``, or ``user.friends``
+        is silently dropped with a warning — those live in the claims layer.
+        """
         if not patch:
             return
+
+        # Drop disallowed top-level keys before doing anything
+        _ALLOWED_SECTIONS = {"identity"}
+        _METADATA_KEYS = {"_confidence", "_explicit"}
+        filtered_patch: dict = {}
+        for section, updates in patch.items():
+            if section in _METADATA_KEYS:
+                continue  # top-level metadata, not a section write
+            if section not in _ALLOWED_SECTIONS:
+                _get_log().warning(
+                    "apply_patch: ignoring disallowed section '%s' — "
+                    "people data belongs in the claims layer",
+                    section,
+                )
+                continue
+            filtered_patch[section] = updates
+
+        if not filtered_patch:
+            _get_log().info("apply_patch: all values were empty or disallowed — skipping write")
+            return
+
         data = self.load()
 
         # Record before/after for each changed key for the audit log
         changes: dict[str, dict] = {}
-        for section, updates in patch.items():
+        for section, updates in filtered_patch.items():
             if isinstance(updates, dict):
                 for key, new_val in updates.items():
                     # Skip empty-dict values — the model sometimes returns
-                    # {"family": {}} when it detects family content but extracts
-                    # nothing concrete.  Writing these would be a no-op at best
-                    # and misleading in the audit log.
+                    # {"personality_notes": {}} when it extracts nothing.
                     if isinstance(new_val, dict) and not new_val:
                         continue
                     old_val = (data.get(section) or {}).get(key, "<new>")
@@ -195,7 +219,7 @@ class SoulFile:
             _get_log().info("apply_patch: all values were empty — skipping write")
             return
 
-        for section, updates in patch.items():
+        for section, updates in filtered_patch.items():
             if isinstance(updates, dict):
                 if section not in data or not isinstance(data.get(section), dict):
                     data[section] = {}
@@ -421,23 +445,30 @@ def maybe_grow_curiosity(
 # ---------------------------------------------------------------------------
 
 # Keys that STAY in the soul file after migration.
-# Everything else in `user` and `partner` is moved to the facts store.
-_SOUL_USER_CORE: frozenset[str] = frozenset(
-    {"name", "preferred_name", "date_of_birth", "location"}
-)
-_SOUL_PARTNER_CORE: frozenset[str] = frozenset(
-    {"name", "preferred_name", "relationship"}
-)
+# Phase 2.5: all people data moves to the claims / facts layer so the soul
+# file is reserved strictly for Orion's personality (identity section only).
+_SOUL_USER_CORE: frozenset[str] = frozenset()    # nothing stays in soul
+_SOUL_PARTNER_CORE: frozenset[str] = frozenset()  # nothing stays in soul
+
+# Top-level soul keys that belong to Orion's identity — everything else is
+# people data and gets migrated out.
+_IDENTITY_KEYS = frozenset({"identity"})
 
 # `identity` and `environment` sections are kept in full — never migrated.
 
 
 def migrate_soul_to_facts(soul: SoulFile) -> int:
-    """Move non-core soul fields into the FactsStore and trim the soul file.
+    """Move all people data from the soul file into the FactsStore.
 
-    Only runs when there are fields outside the core sets.  Safe to call
-    multiple times — duplicate facts are silently skipped by FactsStore.
+    Phase 2.5: the soul file is reserved for Orion's identity/personality only.
+    Any ``user``, ``user.partner``, ``user.family``, ``user.friends``, or
+    ``partner`` section is flattened into keyword-searchable fact strings and
+    written to ``data/facts.json``.
 
+    Also removes migration artefacts (standalone ``identity.personality_notes``
+    top-level key, empty ``partner: {}`` entries) left by earlier runs.
+
+    Safe to call multiple times — duplicate facts are skipped by FactsStore.
     Returns the number of facts added to the store.
     """
     from src.memory.facts_store import FactsStore
@@ -449,42 +480,257 @@ def migrate_soul_to_facts(soul: SoulFile) -> int:
     facts_store = FactsStore()
     bulk: list[dict] = []
 
-    # --- user section ---
-    user = data.get("user")
+    # --- user section (all fields migrate) ---
+    user = data.pop("user", None)
     if isinstance(user, dict):
-        non_core = {k: v for k, v in user.items() if k not in _SOUL_USER_CORE}
-        for key, value in non_core.items():
+        for key, value in user.items():
             category = _user_key_to_category(key)
-            facts = _flatten_to_facts(key, value, "user", category)
-            bulk.extend(facts)
-        # Trim user to core keys
-        data["user"] = {k: v for k, v in user.items() if k in _SOUL_USER_CORE}
+            bulk.extend(_flatten_to_facts(key, value, "user", category))
 
-    # --- partner section ---
-    partner = data.get("partner")
-    if isinstance(partner, dict):
-        non_core = {k: v for k, v in partner.items() if k not in _SOUL_PARTNER_CORE}
-        for key, value in non_core.items():
-            facts = _flatten_to_facts(key, value, "partner", "partner")
-            bulk.extend(facts)
-        # Trim partner to core keys
-        data["partner"] = {k: v for k, v in partner.items() if k in _SOUL_PARTNER_CORE}
+    # --- partner / user.partner (all fields migrate) ---
+    for pkey in ("partner", "user.partner"):
+        partner = data.pop(pkey, None)
+        if isinstance(partner, dict) and partner:
+            for key, value in partner.items():
+                bulk.extend(
+                    _flatten_to_facts(key, value, "partner", "relationships")
+                )
+
+    # --- user.family (all fields migrate) ---
+    family = data.pop("user.family", None)
+    if isinstance(family, dict):
+        for key, value in family.items():
+            bulk.extend(
+                _flatten_to_facts(key, value, "user.family", "relationships")
+            )
+
+    # --- user.friends (all entries migrate) ---
+    friends = data.pop("user.friends", None)
+    if isinstance(friends, list):
+        for friend in friends:
+            if isinstance(friend, dict):
+                summary = "; ".join(
+                    f"{k}: {v}"
+                    for k, v in friend.items()
+                    if isinstance(v, (str, int, float))
+                )
+                if summary:
+                    bulk.append(
+                        {
+                            "fact": f"friend — {summary}",
+                            "category": "relationships",
+                            "confidence": 1.0,
+                            "explicit": True,
+                            "source": "migration:user.friends",
+                        }
+                    )
 
     # --- facts section (entire section moves) ---
     facts_section = data.pop("facts", None)
     if isinstance(facts_section, dict):
         for key, value in facts_section.items():
-            items = _flatten_to_facts(key, value, "facts", "general")
-            bulk.extend(items)
+            bulk.extend(_flatten_to_facts(key, value, "facts", "general"))
+
+    # --- clean up artefacts from prior partial migrations ---
+    # Standalone identity.personality_notes top-level key
+    if "identity.personality_notes" in data:
+        del data["identity.personality_notes"]
+    # Empty environment section
+    if "environment" in data and not data["environment"]:
+        del data["environment"]
 
     added = facts_store.add_facts_bulk(bulk)
 
-    # Persist the trimmed soul file
+    # Persist the trimmed soul file (identity section only remains)
     soul.save(data)
     _get_log().info(
-        "migrate_soul_to_facts: migrated %d facts, soul file trimmed", added
+        "migrate_soul_to_facts: migrated %d facts, soul file trimmed to identity-only",
+        added,
     )
     return added
+
+
+def migrate_soul_to_claims(soul: SoulFile) -> int:
+    """Convert people data from the soul file into rich sentence-format claims.
+
+    Reads the same people sections as ``migrate_soul_to_facts`` but writes
+    human-readable, semantically searchable sentences to the ``ClaimsStore``
+    (``data/memory/claims.db``) instead of keyword-tag strings.
+
+    Called once per session startup alongside ``migrate_soul_to_facts``.
+    Idempotent: duplicate claims reinforce their confidence counter.
+
+    Returns the number of *new* claims inserted (reinforcements excluded).
+    """
+    from src.memory.claims import ClaimsStore
+
+    data = soul.load()
+    if not data:
+        return 0
+
+    store = ClaimsStore()
+    claim_texts: list[dict] = []
+
+    # --- user ---
+    user = data.get("user")
+    if isinstance(user, dict):
+        name = user.get("name", "")
+        preferred = user.get("preferred_name") or name
+        if name:
+            claim_texts.append({
+                "text": f"The user's name is {name}.",
+                "category": "biographical_facts",
+            })
+        if user.get("date_of_birth"):
+            claim_texts.append({
+                "text": f"{preferred or name} was born on {user['date_of_birth']}.",
+                "category": "biographical_facts",
+            })
+        if user.get("location"):
+            claim_texts.append({
+                "text": f"{preferred or name} lives in {user['location']}.",
+                "category": "biographical_facts",
+            })
+
+    # --- partner / user.partner ---
+    user_name = (data.get("user") or {}).get("preferred_name") or (data.get("user") or {}).get("name") or "Daniel"
+    for pkey in ("partner", "user.partner"):
+        partner = data.get(pkey)
+        if not isinstance(partner, dict) or not partner:
+            continue
+        p_name = partner.get("name", "")
+        p_preferred = partner.get("preferred_name") or p_name
+        rel = partner.get("relationship", "partner")
+        if p_name:
+            claim_texts.append({
+                "text": f"{user_name}'s {rel.lower()} is {p_name}{f', also known as {p_preferred}' if p_preferred and p_preferred != p_name else ''}.",
+                "category": "relationships",
+            })
+        if partner.get("date_of_birth"):
+            claim_texts.append({
+                "text": f"{p_preferred or p_name} was born on {partner['date_of_birth']}.",
+                "category": "biographical_facts",
+            })
+        if partner.get("location"):
+            claim_texts.append({
+                "text": f"{p_preferred or p_name} lives in {partner['location']}.",
+                "category": "biographical_facts",
+            })
+        if partner.get("work"):
+            claim_texts.append({
+                "text": f"{p_preferred or p_name} works as {partner['work']}.",
+                "category": "relationships",
+            })
+
+    # --- user.family ---
+    family = data.get("user.family")
+    if isinstance(family, dict):
+        # Brothers list
+        brothers = family.get("brothers") or []
+        if isinstance(brothers, list):
+            names = [b["name"] if isinstance(b, dict) else str(b) for b in brothers if b]
+            if names:
+                claim_texts.append({
+                    "text": f"{user_name}'s brothers are named {', '.join(names)}.",
+                    "category": "relationships",
+                })
+        # Parents (handle both dict and string formats)
+        for field, label in (
+            ("mother", "mother"), ("mother.name", "mother"),
+            ("father", "father"), ("father.name", "father"),
+            ("stepfather", "stepfather"), ("stepfather.name", "stepfather"),
+            ("step_father", "stepfather"),
+        ):
+            val = family.get(field)
+            if not val:
+                continue
+            display = val["name"] if isinstance(val, dict) else str(val)
+            if display:
+                claim_texts.append({
+                    "text": f"{user_name}'s {label} is named {display}.",
+                    "category": "relationships",
+                })
+
+    # --- user.friends ---
+    friends = data.get("user.friends")
+    if isinstance(friends, list):
+        for friend in friends:
+            if not isinstance(friend, dict):
+                continue
+            fname = friend.get("name", "")
+            rel = friend.get("relationship", "")
+            location = friend.get("location", "")
+            work = friend.get("work", "")
+            children = friend.get("children", [])
+            gamer_tag = friend.get("gamer_tag", "")
+
+            parts = []
+            if rel:
+                parts.append(f"{fname} is {user_name}'s {rel.lower()}")
+            else:
+                parts.append(f"{fname} is a friend of {user_name}")
+            if location:
+                parts.append(f"and lives in {location}")
+            if work:
+                claim_texts.append({
+                    "text": f"{fname} works in {work}.",
+                    "category": "relationships",
+                })
+            if children:
+                child_names = [
+                    c if isinstance(c, str) else c.get("name", "")
+                    for c in children
+                    if c
+                ]
+                child_names = [n for n in child_names if n]
+                if child_names:
+                    claim_texts.append({
+                        "text": f"{fname} has {'a child' if len(child_names) == 1 else 'children'} named {', '.join(child_names)}.",
+                        "category": "relationships",
+                    })
+            if gamer_tag:
+                claim_texts.append({
+                    "text": f"{fname}'s gamer tag is {gamer_tag}.",
+                    "category": "general",
+                })
+            if parts:
+                claim_texts.append({
+                    "text": " ".join(parts) + ".",
+                    "category": "relationships",
+                })
+
+    # Write to claims store
+    added = 0
+    for item in claim_texts:
+        text = item["text"].strip()
+        if len(text) < 10:
+            continue
+        try:
+            from src.memory.claims import _claim_id
+            import sqlite3
+            cid = _claim_id(text)
+            with sqlite3.connect(str(store._path), check_same_thread=False) as conn:
+                exists = conn.execute(
+                    "SELECT id FROM claims WHERE id = ?", (cid,)
+                ).fetchone()
+            if not exists:
+                store.add_claim(
+                    text=text,
+                    category=item.get("category", "general"),
+                    confidence=1.0,
+                    source_ids=["migration:soul"],
+                )
+                added += 1
+        except Exception:
+            pass
+
+    if added:
+        _get_log().info(
+            "migrate_soul_to_claims: wrote %d new claims from soul people data",
+            added,
+        )
+    return added
+
 
 
 def _user_key_to_category(key: str) -> str:
