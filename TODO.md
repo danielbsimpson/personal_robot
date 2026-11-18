@@ -430,6 +430,10 @@ Codify the go/no-go logic as a reusable utility so it can be called from both th
 - [ ] Test FTS5 fallback path (keyword-only match with zero vector similarity) — not yet covered
 - [ ] Test `ContextBudget` split ratios (claims 40%, facts 30%, episodes 30%) — not yet covered
 
+### Deferred Memory Follow-ups
+
+Revisit deletion policy, retrieval tuning, storage/runtime alternatives, and Raspberry Pi-specific optimization in later specs when the decisions are clear or benchmarks justify them. These are not commitments to migrate to SQLite or ONNX.
+
 ---
 
 ## Phase 3 — Voice Input (Speech-to-Text)
